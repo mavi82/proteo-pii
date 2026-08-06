@@ -1,0 +1,15 @@
+# proteo — dipendenze
+#
+# Il nucleo (fpe.py, surrogati) dipende SOLO da `cryptography`: si testa senza
+# database e senza rete. Il resto arriva quando si attacca il primo motore.
+
+cryptography>=42        # AES per FF1
+
+# Accesso ai database — introspezione unificata sui tre motori
+sqlalchemy>=2.0
+pyodbc                  # SQL Server  (richiede "ODBC Driver 17/18 for SQL Server")
+psycopg[binary]>=3.1    # PostgreSQL  (COPY nativo per le scritture massive)
+PyMySQL                 # MySQL / MariaDB
+
+# UI web locale
+flask

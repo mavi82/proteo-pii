@@ -1,0 +1,20 @@
+# CHIAVI — mai, per nessun motivo, dentro il repository.
+# Chi ha il file di chiave puo' riportare in chiaro l'intero database.
+*.key
+*.proteo
+keys/
+
+# configurazione locale: contiene stringhe di connessione, quindi credenziali
+config.json
+config.local.*
+.env
+
+# ambiente
+.venv/
+__pycache__/
+*.py[cod]
+
+# artefatti
+dist/
+build/
+*.egg-info/
