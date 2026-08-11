@@ -14,7 +14,8 @@ produce nessun sintomo visibile — esce in chiaro e basta.
 """
 
 from . import db
-from .registro import CIFRATA, IN_CHIARO, Registro, StatoIncoerente
+from .registro import (AZZERATA, CIFRATA, IN_CHIARO, IN_CORSO, Registro,
+                       StatoIncoerente)
 from .policy import Problema
 from .surrogati import Surrogatore, ValoreNonTrattabile
 
@@ -72,6 +73,39 @@ class Motore:
             except StatoIncoerente as e:
                 problemi.append(Problema("errore", dove, str(e)))
 
+        problemi.extend(self._verifica_azzeramenti(verso))
+        return problemi
+
+    def _verifica_azzeramenti(self, verso):
+        """`azzera` distrugge: qui si dice ad alta voce cosa non tornera' indietro.
+
+        Non e' un errore — l'utente l'ha chiesto dichiarandolo nella policy — ma
+        non deve nemmeno passare in silenzio: e' l'unica operazione del progetto
+        che nessuna chiave puo' annullare.
+        """
+        problemi = []
+        for tabella, colonna, _ in self.policy.colonne_da_azzerare():
+            dove = "%s.%s" % (tabella, colonna)
+            stato = self.registro.stato(self.database, tabella, colonna)
+            if stato == IN_CORSO:
+                problemi.append(Problema(
+                    "errore", dove,
+                    "rimasta in stato 'in_corso': un'esecuzione precedente non e' "
+                    "mai finita e la colonna e' in uno stato misto. Va risolta a mano."))
+            elif verso == "decifra":
+                # In decifratura si passa oltre invece di bloccare: fermare tutto
+                # renderebbe impossibile riportare in chiaro le altre colonne, e
+                # una colonna azzerata non sarebbe comunque recuperabile.
+                if stato == AZZERATA:
+                    problemi.append(Problema(
+                        "avviso", dove,
+                        "azzerata in cifratura: resta vuota, nessuna chiave la "
+                        "riporta indietro. Serve un backup."))
+            elif stato != AZZERATA:
+                problemi.append(Problema(
+                    "avviso", dove,
+                    "strategia 'azzera': i valori verranno eliminati e non "
+                    "tornano indietro nemmeno con la chiave."))
         return problemi
 
     def errori(self, verso="cifra"):
@@ -101,9 +135,28 @@ class Motore:
                     break                   # basta il primo lotto per un campione
             finally:
                 gen.close()
-            out.append({"tabella": tabella, "colonna": colonna, "tipo": regola["tipo"],
+            out.append({"operazione": "cifra",
+                        "tabella": tabella, "colonna": colonna, "tipo": regola["tipo"],
                         "tweak": tweak.decode(), "righe": righe, "distinti": distinti,
                         "campione": campione, "non_trattabili": scarti})
+
+        # Le colonne da azzerare compaiono nell'anteprima con i valori che stanno
+        # per sparire: e' l'ultimo momento in cui si possono ancora vedere.
+        if verso == "cifra":
+            for tabella, colonna, _ in self.policy.colonne_da_azzerare():
+                righe, distinti = db.conta(self.engine, tabella, colonna)
+                campione = []
+                gen = db.leggi_distinti(self.engine, tabella, colonna, lotto=max(n, 64))
+                try:
+                    for blocco in gen:
+                        campione = [(v, None) for v in blocco[:n]]
+                        break                   # basta il primo lotto per un campione
+                finally:
+                    gen.close()
+                out.append({"operazione": "azzera",
+                            "tabella": tabella, "colonna": colonna, "tipo": None,
+                            "tweak": None, "righe": righe, "distinti": distinti,
+                            "campione": campione, "non_trattabili": []})
         return out
 
     # -- esecuzione --------------------------------------------------------- #
@@ -136,10 +189,41 @@ class Motore:
             stato = CIFRATA if verso == "cifra" else IN_CHIARO
             self.registro.concludi(self.database, tabella, colonna, stato, toccate)
             rapporto["colonne"].append({
+                "operazione": "cifra",
                 "tabella": tabella, "colonna": colonna, "tipo": tipo,
                 "righe_aggiornate": toccate, "non_trattabili": scarti,
             })
+
+        rapporto["colonne"].extend(self._azzera(verso, progresso))
         return rapporto
+
+    def _azzera(self, verso, progresso=None):
+        """Svuota le colonne dichiarate `azzera`. Solo in cifratura.
+
+        In decifratura non si fa nulla: non c'e' nulla da riportare indietro, e
+        rieseguire l'azzeramento distruggerebbe i valori che l'utente ha appena
+        chiesto di recuperare.
+        """
+        if verso != "cifra":
+            return []
+
+        fatte = []
+        for tabella, colonna, _ in self.policy.colonne_da_azzerare():
+            if progresso:
+                progresso("%s.%s (azzera)" % (tabella, colonna))
+            # Passa dal registro come la cifratura: e' l'unica cosa che sappia
+            # dire, dopo, perche' quella colonna e' vuota — una colonna svuotata
+            # e una colonna sempre stata vuota si somigliano troppo.
+            self.registro.avvia(self.database, tabella, colonna,
+                                tipo=None, tweak=None, chiave_id=None, verso="azzera")
+            toccate = db.azzera(self.engine, tabella, colonna)
+            self.registro.concludi(self.database, tabella, colonna, AZZERATA, toccate)
+            fatte.append({
+                "operazione": "azzera",
+                "tabella": tabella, "colonna": colonna, "tipo": None,
+                "righe_aggiornate": toccate, "non_trattabili": [],
+            })
+        return fatte
 
     # -- interni ------------------------------------------------------------ #
     def _trasforma(self, tipo, valore, tweak, verso):

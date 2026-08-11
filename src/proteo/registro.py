@@ -32,12 +32,14 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-__all__ = ["Registro", "StatoIncoerente", "IN_CHIARO", "CIFRATA", "IN_CORSO"]
+__all__ = ["Registro", "StatoIncoerente", "IN_CHIARO", "CIFRATA", "AZZERATA",
+           "IN_CORSO"]
 
 FORMATO = "proteo-registro-v1"
 
 IN_CHIARO = "in_chiaro"
 CIFRATA = "cifrata"
+AZZERATA = "azzerata"          # svuotata: non e' cifratura, non torna indietro
 IN_CORSO = "in_corso"          # esecuzione iniziata e mai conclusa: vedi `interrotte()`
 
 _SICURI = re.compile(r"[^A-Za-z0-9._-]")
@@ -173,6 +175,13 @@ class Registro:
         if v is None or v["stato"] == IN_CHIARO:
             raise StatoIncoerente("%s non risulta cifrata: non c'e' nulla da riportare "
                                   "in chiaro." % dove)
+        if v["stato"] == AZZERATA:
+            # Non e' un caso di chiave sbagliata: qui non esiste chiave che basti.
+            # Va detto con parole diverse, o si perde tempo a cercare il file giusto.
+            raise StatoIncoerente(
+                "%s e' stata azzerata il %s: i valori non ci sono piu' e nessuna "
+                "chiave li riporta indietro. Servono un backup o il database di "
+                "origine." % (dove, v.get("aggiornato")))
         if v["stato"] == IN_CORSO:
             raise StatoIncoerente(
                 "%s e' rimasta in stato 'in_corso' da %s: va risolta a mano."

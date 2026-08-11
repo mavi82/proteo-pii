@@ -33,7 +33,7 @@ from sqlalchemy import (Column, MetaData, String, Table, delete, func, insert,
                        inspect, select, update)
 
 __all__ = ["elenco_tabelle", "introspeziona", "conta", "leggi_distinti",
-           "applica_mappa", "dividi_nome"]
+           "applica_mappa", "azzera", "dividi_nome"]
 
 LOTTO_LETTURA = 50_000
 LOTTO_SCRITTURA = 10_000
@@ -132,6 +132,21 @@ def leggi_distinti(engine, tabella, colonna, lotto=LOTTO_LETTURA):
 # --------------------------------------------------------------------------- #
 # Scrittura
 # --------------------------------------------------------------------------- #
+def azzera(engine, tabella, colonna):
+    """Mette a NULL la colonna. Ritorna le righe toccate.
+
+    Non c'e' mappa e non c'e' ritorno: e' l'unica operazione di Proteo che
+    distrugge i dati invece di trasformarli. Si toccano solo le righe non nulle,
+    cosi' il conteggio dice quanti valori sono stati davvero eliminati e una
+    seconda esecuzione riporta zero invece dell'intera tabella.
+    """
+    t = _tabella(engine, tabella)
+    c = t.c[colonna]
+    with engine.begin() as conn:
+        return conn.execute(update(t).where(c.is_not(None))
+                                     .values({colonna: None})).rowcount
+
+
 def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA):
     """Applica {vecchio: nuovo} con un solo UPDATE. Ritorna le righe toccate.
 

@@ -113,6 +113,11 @@ consegnare quella colonna in chiaro senza che nessuno lo sappia.
 }
 ```
 
+`azzera` svuota la colonna, e non c'è chiave che la riporti indietro: è l'unica
+operazione di Proteo che distrugge invece di trasformare. Per questo compare
+nell'anteprima con i valori che stanno per sparire, e il registro la marca
+`azzerata` — una colonna svuotata e una colonna nata vuota si somigliano troppo.
+
 ### Il registro
 
 Con FPE il surrogato è **indistinguibile dall'originale**: guardando una colonna
@@ -195,10 +200,11 @@ ancora scritto.
 | `registro.py` | ✅ | stato per colonna, guardie contro doppia cifratura e chiave sbagliata |
 | `db.py` | ✅ | introspezione, lettura a flusso, applicazione della mappa (SQLAlchemy) |
 | `motore.py` | ✅ | verifica → anteprima → esecuzione, con i cancelli fail-closed |
+| `cli.py` | ✅ | riga di comando: chiave, bozza di policy, verifica, anteprima, cifra, decifra |
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**69 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**75 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -238,6 +244,38 @@ pip install -r requirements.txt
 
 Il nucleo richiede solo `cryptography`. Gli altri pacchetti servono agli
 adattatori dei database e alla UI.
+
+---
+
+## Uso
+
+L'URL del database sta in una variabile d'ambiente: su riga di comando la
+password finirebbe nella storia della shell e nell'output di `ps`. Se l'URL non
+la contiene, viene chiesta da terminale.
+
+```bash
+export PYTHONPATH=$PWD/src
+export PROTEO_URL="postgresql+psycopg://utente@host:5432/vendite"
+```
+
+I comandi sono in ordine di uso, e **solo gli ultimi due scrivono**:
+
+```bash
+python -m proteo.cli chiave ~/.proteo/vendite.key       # una volta sola, per sempre
+python -m proteo.cli bozza-policy --policy policy.json  # tutte le colonne a 'mantieni'
+python -m proteo.cli verifica  --chiave ~/.proteo/vendite.key
+python -m proteo.cli anteprima --chiave ~/.proteo/vendite.key
+python -m proteo.cli cifra     --chiave ~/.proteo/vendite.key
+python -m proteo.cli decifra   --chiave ~/.proteo/vendite.key
+```
+
+`bozza-policy` legge lo schema e scrive **tutte** le colonne come `mantieni`,
+elencando in coda le foreign key: si apre il file e si cambia in `cifra` ciò che
+va trattato. È ciò che rende sopportabile il fail-closed senza indebolirlo.
+
+`cifra` richiama la verifica da sé e chiede conferma esplicita; `--si` la salta.
+`--registro` va passato sempre (il default `./registro` cambia con la directory
+da cui si lancia), e va tenuto insieme alla chiave.
 
 ---
 
