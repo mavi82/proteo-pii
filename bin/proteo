@@ -1,0 +1,13 @@
+#!/bin/sh
+# Avvia Proteo senza dover ricordare PYTHONPATH ne' il percorso del venv.
+#
+# Cerca il .venv del progetto e ci ricade sopra da solo: la trappola piu' comune
+# e' lanciare Proteo con la python di sistema, che non ha SQLAlchemy, e leggere
+# un ModuleNotFoundError invece di un errore che parli di database.
+set -e
+QUI=$(cd "$(dirname "$0")/.." && pwd)
+PYTHON="$QUI/.venv/bin/python"
+[ -x "$PYTHON" ] || PYTHON=$(command -v python3 || command -v python)
+PROTEO_PROG=$(basename "$0")
+export PROTEO_PROG
+PYTHONPATH="$QUI/src${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON" -m proteo.cli "$@"

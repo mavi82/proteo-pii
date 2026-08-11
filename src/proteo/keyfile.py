@@ -28,7 +28,8 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes, hmac
 
-__all__ = ["genera", "carica", "chiave_id", "ChiaveEsistente", "ChiaveNonValida"]
+__all__ = ["genera", "carica", "chiave_id", "dentro_un_repo_git",
+           "ChiaveEsistente", "ChiaveNonValida"]
 
 FORMATO = "proteo-key-v1"
 _ETICHETTA_ID = b"proteo/identificativo-chiave"
@@ -50,7 +51,7 @@ def chiave_id(key):
     return h.finalize()[:8].hex()
 
 
-def _dentro_un_repo_git(percorso):
+def dentro_un_repo_git(percorso):
     try:
         r = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
                            cwd=str(Path(percorso).resolve().parent),
@@ -72,7 +73,7 @@ def genera(percorso, forza_dentro_git=False):
         raise ChiaveEsistente(
             "%s esiste gia'. Sovrascriverlo renderebbe illeggibile tutto cio' che "
             "e' stato cifrato con la chiave attuale: spostalo a mano se sei sicuro." % p)
-    if not forza_dentro_git and _dentro_un_repo_git(p):
+    if not forza_dentro_git and dentro_un_repo_git(p):
         raise ChiaveNonValida(
             "%s e' dentro un repository git: una chiave committata finisce in ogni "
             "clone e in tutta la storia. Scegli un percorso fuori dal repo." % p)

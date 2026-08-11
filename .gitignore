@@ -5,6 +5,7 @@
 keys/
 
 # configurazione locale: contiene stringhe di connessione, quindi credenziali
+proteo.json
 config.json
 config.local.*
 .env

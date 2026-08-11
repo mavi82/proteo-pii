@@ -200,11 +200,13 @@ ancora scritto.
 | `registro.py` | ✅ | stato per colonna, guardie contro doppia cifratura e chiave sbagliata |
 | `db.py` | ✅ | introspezione, lettura a flusso, applicazione della mappa (SQLAlchemy) |
 | `motore.py` | ✅ | verifica → anteprima → esecuzione, con i cancelli fail-closed |
+| `config.py` | ✅ | configurazione per database, con le condizioni per tenerci la password |
 | `cli.py` | ✅ | riga di comando: chiave, bozza di policy, verifica, anteprima, cifra, decifra |
+| `menu.py` | ✅ | il menu guidato, per lavorare a mano |
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**75 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**90 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -249,33 +251,98 @@ adattatori dei database e alla UI.
 
 ## Uso
 
-L'URL del database sta in una variabile d'ambiente: su riga di comando la
-password finirebbe nella storia della shell e nell'output di `ps`. Se l'URL non
-la contiene, viene chiesta da terminale.
-
 ```bash
-export PYTHONPATH=$PWD/src
-export PROTEO_URL="postgresql+psycopg://utente@host:5432/vendite"
+bin/proteo
 ```
 
-I comandi sono in ordine di uso, e **solo gli ultimi due scrivono**:
+Senza argomenti parte il **menu guidato**. Alla prima esecuzione fa qualche
+domanda e scrive la configurazione; dopo, tiene sempre in testa allo schermo su
+quale database si sta lavorando e cosa risulta già fatto — le due domande a cui
+si sbaglia risposta, e sbagliarle significa cifrare il database sbagliato o
+cifrare due volte lo stesso.
+
+```
+------------------------------------------------------------------------
+Proteo — VenditeDB
+  postgresql+psycopg://utente:***@host:5432/vendite
+  policy /root/.proteo/vendite-policy.json
+  registro /root/.proteo/registro
+------------------------------------------------------------------------
+
+Cosa vuoi fare?
+  1) stato del registro — cosa risulta gia' fatto
+  2) verifica (non scrive)
+  3) anteprima prima/dopo (non scrive)
+  4) CIFRA — scrive sul database
+  5) DECIFRA — riporta in chiaro, scrive sul database
+  6) crea la bozza di policy
+  7) genera la chiave
+  8) cambia database
+  9) esci
+```
+
+Le voci che scrivono non si confermano con un tasto ma scrivendo `si`: da un
+menu numerato, un tasto di troppo è esattamente il modo in cui si lancia il
+comando accanto a quello che si voleva.
+
+### La configurazione
+
+Un file per macchina, `./proteo.json` o `~/.proteo/proteo.json`, con un blocco
+per database. Lo crea il menu, ma è leggibile e si corregge a mano:
+
+```json
+{
+  "formato": "proteo-config-v1",
+  "predefinito": "vendite",
+  "database": {
+    "vendite": {
+      "url": "postgresql+psycopg://utente@host:5432/vendite",
+      "chiave": "/root/.proteo/vendite.key",
+      "policy": "/root/.proteo/vendite-policy.json",
+      "registro": "/root/.proteo/registro",
+      "etichetta": "VenditeDB"
+    }
+  }
+}
+```
+
+I percorsi relativi si risolvono rispetto al file di config, non alla directory
+corrente: `"registro": "registro"` indica sempre la stessa cartella da qualunque
+punto si lanci Proteo. Un registro che cambia con la directory è un registro
+perso, cioè una colonna che nessuno sa più se è cifrata.
+
+La **password** può stare nel config — è il file che descrive quel database — ma
+a due condizioni, verificate a ogni lettura: il file non dev'essere leggibile da
+altri utenti (`chmod 600`) e non deve stare dentro un repository git. Se manca,
+si prende da `$PROTEO_PASSWORD` o si chiede a terminale. Senza password nel file
+non c'è nessun vincolo: non c'è niente da proteggere.
+
+### Comandi singoli
+
+Un menu non si mette in uno script, quindi ogni voce esiste anche come comando.
+Gli argomenti non passati si leggono dal config, e **solo gli ultimi due
+scrivono**:
 
 ```bash
-python -m proteo.cli chiave ~/.proteo/vendite.key       # una volta sola, per sempre
-python -m proteo.cli bozza-policy --policy policy.json  # tutte le colonne a 'mantieni'
-python -m proteo.cli verifica  --chiave ~/.proteo/vendite.key
-python -m proteo.cli anteprima --chiave ~/.proteo/vendite.key
-python -m proteo.cli cifra     --chiave ~/.proteo/vendite.key
-python -m proteo.cli decifra   --chiave ~/.proteo/vendite.key
+bin/proteo chiave ~/.proteo/vendite.key   # una volta sola, per sempre
+bin/proteo bozza-policy                   # tutte le colonne a 'mantieni'
+bin/proteo stato
+bin/proteo verifica
+bin/proteo anteprima
+bin/proteo cifra --rapporto rapporto.json
+bin/proteo decifra
 ```
 
 `bozza-policy` legge lo schema e scrive **tutte** le colonne come `mantieni`,
 elencando in coda le foreign key: si apre il file e si cambia in `cifra` ciò che
 va trattato. È ciò che rende sopportabile il fail-closed senza indebolirlo.
 
-`cifra` richiama la verifica da sé e chiede conferma esplicita; `--si` la salta.
-`--registro` va passato sempre (il default `./registro` cambia con la directory
-da cui si lancia), e va tenuto insieme alla chiave.
+`cifra` richiama la verifica da sé e chiede conferma esplicita; `--si` la salta,
+per cron e script. `--url`, `--chiave`, `--policy`, `--registro` scavalcano il
+config quando serve, e `$PROTEO_URL` sta in mezzo ai due.
+
+`bin/proteo` è un avvio da tre righe: trova il `.venv` del progetto e sistema il
+`PYTHONPATH`. Equivale a `PYTHONPATH=src python -m proteo.cli`.
 
 ---
 
@@ -314,6 +381,7 @@ che nessuno se ne accorga**. È il tipo di errore che non si scopre mai.
 
 ```
 proteo/
+├─ bin/proteo        avvio (venv + PYTHONPATH)
 ├─ src/proteo/
 │  ├─ fpe.py         FF1 — nessuna dipendenza da database
 │  ├─ checksum.py    verifica e calcolo dei checksum italiani
@@ -322,7 +390,11 @@ proteo/
 │  ├─ policy.py      colonne dichiarate + verifica fail-closed
 │  ├─ registro.py    stato per colonna (file locali, una cartella per database)
 │  ├─ db.py          adattatore SQLAlchemy: introspezione, lettura, scrittura
-│  └─ motore.py      orchestrazione: verifica, anteprima, esecuzione
+│  ├─ motore.py      orchestrazione: verifica, anteprima, esecuzione
+│  ├─ config.py      configurazione per database
+│  ├─ stampa.py      come si mostrano problemi, anteprime e rapporti
+│  ├─ cli.py         riga di comando
+│  └─ menu.py        menu guidato
 └─ tests/
 ```
 

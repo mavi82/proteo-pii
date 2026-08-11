@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 """Riga di comando: l'unico punto da cui Proteo tocca un database vero.
 
-    python -m proteo.cli <comando> [opzioni]
+    python -m proteo.cli              il menu guidato
+    python -m proteo.cli <comando>    un'azione sola, per script e cron
 
-I comandi seguono l'ordine in cui vanno usati, e solo l'ultimo scrive:
+Senza argomenti parte il menu (`menu.py`): e' il modo giusto per lavorare a
+mano, perche' tiene sotto gli occhi su quale database si sta lavorando e cosa
+risulta gia' fatto. I comandi singoli restano perche' un menu non si mette in
+uno script, e seguono l'ordine in cui vanno usati:
 
     chiave        genera il file di chiave (una volta sola, per sempre)
     tabelle       elenca le tabelle del database — serve a scrivere la policy
@@ -14,14 +18,19 @@ I comandi seguono l'ordine in cui vanno usati, e solo l'ultimo scrive:
     cifra         SCRIVE
     decifra       SCRIVE
 
-## Perche' la connessione si passa da variabile d'ambiente
+## Da dove arrivano i parametri
+
+Nell'ordine: opzione esplicita, poi variabile d'ambiente, poi file di
+configurazione (`config.py`). Il config e' la via normale — tiene URL, chiave,
+policy e registro di ciascun database — e le opzioni servono a scavalcarlo un
+volta sola senza modificarlo.
 
 Un URL su riga di comando contiene la password, e finisce nella storia della
-shell e nell'output di `ps` — visibile a ogni altro utente della macchina. Il
-default e' quindi `$PROTEO_URL`; `--url` esiste per i casi in cui non c'e'
-alternativa, ma avvisa.
+shell e nell'output di `ps`, visibile a ogni altro utente della macchina. Per
+questo `--url` avvisa, e le alternative sono `$PROTEO_URL`, `$PROTEO_PASSWORD`
+o il config, che si legge solo se e' protetto davvero.
 
-## Perche' `cifra` pretende --si
+## Perche' `cifra` pretende una conferma
 
 `esegui()` e' l'unica operazione irreversibile senza la chiave. Un comando che
 scrive non deve poter partire per una freccia-su di troppo.
@@ -34,10 +43,10 @@ import os
 import sys
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 
-from . import db, keyfile
+from . import config as cfg
+from . import db, keyfile, stampa
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
 from .registro import Registro
@@ -58,93 +67,130 @@ class Uscita(SystemExit):
 
 
 # --------------------------------------------------------------------------- #
-# Pezzi comuni
+# Parametri: opzione, ambiente, configurazione
 # --------------------------------------------------------------------------- #
-def _url(args):
-    grezzo = args.url or os.environ.get("PROTEO_URL")
-    if not grezzo:
-        raise Uscita("manca l'URL del database: esporta PROTEO_URL "
-                     "(es. postgresql+psycopg://utente@host:5432/vendite) oppure usa --url")
+def _config(args):
+    percorso = getattr(args, "config", None) or cfg.percorso_predefinito()
+    if not percorso:
+        return cfg.Config(), {}
+    try:
+        config = cfg.carica(percorso)
+    except cfg.ConfigNonValida as e:
+        raise Uscita(str(e))
+    nome = getattr(args, "db", None) or config.predefinito()
+    if nome is None:
+        raise Uscita("il config elenca piu' database (%s): scegline uno con --db"
+                     % ", ".join(config.nomi()))
+    try:
+        return config, config.voce(nome)
+    except cfg.ConfigNonValida as e:
+        raise Uscita(str(e))
+
+
+def _percorso(args, config, voce, campo):
+    """Opzione esplicita, altrimenti il config (con i suoi percorsi risolti)."""
+    esplicito = getattr(args, campo, None)
+    if esplicito:
+        return Path(esplicito).expanduser()
+    return config.risolvi(voce, campo)
+
+
+def _url(args, config, voce):
     if args.url:
         print("attenzione: --url mette la password nella storia della shell e in "
-              "`ps`. Su una macchina condivisa usa PROTEO_URL.", file=sys.stderr)
-    url = make_url(grezzo)
-    # Password fuori dall'URL: la si chiede qui, cosi' non sta scritta da nessuna
-    # parte. Se l'URL gia' la contiene si rispetta la scelta e non si chiede.
-    if url.username and not url.password and sys.stdin.isatty():
-        url = url.set(password=getpass.getpass("password per %s@%s: "
-                                               % (url.username, url.host)))
+              "`ps`. Su una macchina condivisa usa PROTEO_URL o il config.",
+              file=sys.stderr)
+        url = make_url(args.url)
+    elif os.environ.get("PROTEO_URL"):
+        url = make_url(os.environ["PROTEO_URL"])
+    elif voce.get("url"):
+        url = config.url_completo(voce)
+    else:
+        raise Uscita("manca l'URL del database: mettilo nel config "
+                     "(python -m proteo.cli con il menu lo crea), oppure esporta "
+                     "PROTEO_URL, oppure usa --url")
+
+    if url.username and not url.password:
+        # La password fuori dall'URL non e' un ripiego: e' il caso normale
+        # quando il config e' condiviso o versionato.
+        if os.environ.get("PROTEO_PASSWORD"):
+            url = url.set(password=os.environ["PROTEO_PASSWORD"])
+        elif sys.stdin.isatty():
+            url = url.set(password=getpass.getpass(
+                "password per %s@%s: " % (url.username, url.host)))
     return url
 
 
 def _engine(args):
-    url = _url(args)
-    opzioni = {}
-    if url.drivername.startswith("mssql+pyodbc"):
-        # senza questo pyodbc manda gli INSERT della tabella di appoggio uno per
-        # uno: su un DB remoto e' un round-trip di rete per valore distinto.
-        opzioni["fast_executemany"] = True
-    return create_engine(url, **opzioni)
+    config, voce = _config(args)
+    return db.crea_engine(_url(args, config, voce))
 
 
-def _nome_database(args, engine):
+def _nome_database(args, config, voce, engine):
     """Etichetta del registro. Deve restare identica fra cifra e decifra."""
-    return args.database or engine.url.database or "database"
-
-
-def _policy(args):
-    p = Path(args.policy)
-    if not p.exists():
-        raise Uscita("policy non trovata: %s (creane una bozza con 'bozza-policy')" % p)
-    try:
-        return Policy.carica(p)
-    except (PolicyNonValida, json.JSONDecodeError) as e:
-        raise Uscita("policy illeggibile: %s" % e)
+    return (getattr(args, "database", None) or voce.get("etichetta")
+            or engine.url.database or "database")
 
 
 def _motore(args):
+    config, voce = _config(args)
+    chiave_p = _percorso(args, config, voce, "chiave")
+    policy_p = _percorso(args, config, voce, "policy")
+    registro_p = _percorso(args, config, voce, "registro")
+    if not chiave_p:
+        raise Uscita("manca il file di chiave: --chiave, oppure mettilo nel config")
+    if not policy_p:
+        raise Uscita("manca il file di policy: --policy, oppure mettilo nel config")
+
     try:
-        chiave, kid = keyfile.carica(args.chiave)
+        chiave, kid = keyfile.carica(chiave_p)
     except FileNotFoundError:
-        raise Uscita("chiave non trovata: %s (generala con 'chiave')" % args.chiave)
+        raise Uscita("chiave non trovata: %s (generala con 'chiave')" % chiave_p)
     except keyfile.ChiaveNonValida as e:
         raise Uscita(str(e))
-    engine = _engine(args)
-    motore = Motore(engine, _policy(args), chiave, kid,
-                    Registro(args.registro), _nome_database(args, engine))
+
+    try:
+        policy = Policy.carica(policy_p)
+    except FileNotFoundError:
+        raise Uscita("policy non trovata: %s (creane una bozza con 'bozza-policy')"
+                     % policy_p)
+    except (PolicyNonValida, json.JSONDecodeError) as e:
+        raise Uscita("policy illeggibile: %s" % e)
+
+    engine = db.crea_engine(_url(args, config, voce))
+    motore = Motore(engine, policy, chiave, kid, Registro(registro_p or "registro"),
+                    _nome_database(args, config, voce, engine))
     print("database: %s   chiave: %s   registro: %s"
-          % (motore.database, kid, Path(args.registro).resolve()), file=sys.stderr)
+          % (motore.database, kid, Path(registro_p or "registro").resolve()),
+          file=sys.stderr)
     return motore
 
 
-def _stampa_problemi(problemi):
-    for p in sorted(problemi, key=lambda x: (x.livello != "errore", x.dove)):
-        print("  [%s] %s: %s" % (p.livello, p.dove, p.messaggio))
-    return sum(1 for p in problemi if p.livello == "errore")
+# --------------------------------------------------------------------------- #
+# Comandi
+# --------------------------------------------------------------------------- #
+def cmd_menu(args):
+    from . import menu                    # importato qui: il menu usa questo
+    raise SystemExit(menu.avvia(args.config))   # modulo solo per essere avviato
 
 
-# --------------------------------------------------------------------------- #
-# Comandi che non toccano il database
-# --------------------------------------------------------------------------- #
 def cmd_chiave(args):
+    config, voce = _config(args)
+    percorso = args.percorso or _percorso(args, config, voce, "chiave")
+    if not percorso:
+        raise Uscita("indica dove creare la chiave, o mettila nel config")
     try:
-        _, kid = keyfile.genera(args.percorso)
-    except keyfile.ChiaveEsistente as e:
+        _, kid = keyfile.genera(percorso)
+    except (keyfile.ChiaveEsistente, keyfile.ChiaveNonValida) as e:
         raise Uscita(str(e))
-    except keyfile.ChiaveNonValida as e:
-        raise Uscita(str(e))
-    print("chiave creata: %s" % Path(args.percorso).resolve())
+    print("chiave creata: %s" % Path(percorso).resolve())
     print("identificativo: %s" % kid)
     print("\nCopiala in un posto sicuro insieme al registro. Perderla significa "
           "perdere i dati: non esiste alcun dizionario da cui recuperarli.")
 
 
-# --------------------------------------------------------------------------- #
-# Comandi in sola lettura
-# --------------------------------------------------------------------------- #
 def cmd_tabelle(args):
-    engine = _engine(args)
-    for t in db.elenco_tabelle(engine, args.schema):
+    for t in db.elenco_tabelle(_engine(args), args.schema):
         print(t)
 
 
@@ -154,13 +200,14 @@ def cmd_bozza_policy(args):
     Si scrive la bozza completa e la si corregge, invece di far scrivere a mano
     una riga per colonna — il costo che rende il fail-closed accettabile.
     """
-    engine = _engine(args)
+    config, voce = _config(args)
+    engine = db.crea_engine(_url(args, config, voce))
     tabelle = args.tabelle or db.elenco_tabelle(engine, args.schema)
     schema = db.introspeziona(engine, sorted(tabelle))
     policy = Policy({t: {c: {"strategia": "mantieni"} for c in sorted(colonne)}
                      for t, colonne in schema["tabelle"].items()})
 
-    destinazione = Path(args.policy)
+    destinazione = _percorso(args, config, voce, "policy") or Path("policy.json")
     if destinazione.exists() and not args.sovrascrivi:
         raise Uscita("%s esiste gia': una bozza rigenerata cancellerebbe le "
                      "strategie gia' scelte. Usa --sovrascrivi se e' cio' che vuoi."
@@ -178,60 +225,31 @@ def cmd_bozza_policy(args):
 
 
 def cmd_stato(args):
-    engine = _engine(args)
-    registro = Registro(args.registro)
-    database = _nome_database(args, engine)
-    voci = registro.elenco(database)
-    if not voci:
-        print("nessuna colonna registrata per %s" % database)
-        return
-    for v in voci:
-        # una colonna azzerata non ha ne' tipo ne' chiave: stamparne i None
-        # farebbe pensare a un'informazione persa invece che mai esistita
-        campi = " ".join("%s=%s" % (k, v.get(k)) for k in ("tipo", "tweak", "chiave_id")
-                         if v.get(k) is not None)
-        print("%-9s %s.%s  %s  righe=%s  %s"
-              % (v.get("stato"), v.get("tabella"), v.get("colonna"), campi,
-                 v.get("righe", "-"), v.get("aggiornato")))
-    interrotte = registro.interrotte(database)
-    if interrotte:
-        print("\n%d colonne in stato 'in_corso': un'esecuzione non e' mai finita e "
-              "la colonna e' in uno stato misto. Vanno risolte a mano."
-              % len(interrotte))
+    config, voce = _config(args)
+    engine = db.crea_engine(_url(args, config, voce))
+    registro = Registro(_percorso(args, config, voce, "registro") or "registro")
+    database = _nome_database(args, config, voce, engine)
+    print("registro di %s:" % database)
+    stampa.stato(registro.elenco(database), registro.interrotte(database))
 
 
 def cmd_verifica(args):
-    motore = _motore(args)
-    problemi = motore.verifica(args.verso)
+    problemi = _motore(args).verifica(args.verso)
     if not problemi:
         print("nessun problema: si puo' procedere con '%s'." % args.verso)
         return
-    errori = _stampa_problemi(problemi)
-    if errori:
+    if stampa.problemi(problemi):
         raise SystemExit(1)
 
 
 def cmd_anteprima(args):
-    motore = _motore(args)
-    for c in motore.anteprima(n=args.campione, verso=args.verso):
-        etichetta = ("AZZERA — i valori spariscono" if c["operazione"] == "azzera"
-                     else "%s, tweak=%s" % (c["tipo"], c["tweak"]))
-        print("\n%s.%s  [%s]  %s righe, %s valori distinti"
-              % (c["tabella"], c["colonna"], etichetta, c["righe"], c["distinti"]))
-        for prima, dopo in c["campione"]:
-            print("    %-32s -> %s" % (prima, "(NULL)" if dopo is None else dopo))
-        for valore, motivo in c["non_trattabili"]:
-            print("    %-32s !! %s" % (valore, motivo))
+    stampa.anteprima(_motore(args).anteprima(n=args.campione, verso=args.verso))
 
 
-# --------------------------------------------------------------------------- #
-# Comandi che scrivono
-# --------------------------------------------------------------------------- #
 def _esegui(args, verso):
     motore = _motore(args)
 
-    problemi = motore.verifica(verso)
-    if _stampa_problemi(problemi):
+    if stampa.problemi(motore.verifica(verso)):
         raise Uscita("la verifica ha trovato errori bloccanti: nulla e' stato scritto.")
 
     colonne = [(t, c, r["tipo"]) for t, c, r in motore.policy.colonne_da_cifrare()]
@@ -257,19 +275,7 @@ def _esegui(args, verso):
         raise Uscita(str(e))
 
     print("\nfatto.")
-    for c in rapporto["colonne"]:
-        print("  %s.%s: %d righe %s"
-              % (c["tabella"], c["colonna"], c["righe_aggiornate"],
-                 "AZZERATE" if c["operazione"] == "azzera" else "aggiornate"))
-        if c["non_trattabili"]:
-            # 'salta' lascia il valore in chiaro: e' una fuga di dati, e come tale
-            # va detta a voce alta invece di finire in una riga di riepilogo.
-            print("    %d valori SALTATI, rimasti IN CHIARO nella colonna:"
-                  % len(c["non_trattabili"]))
-            for valore, motivo in c["non_trattabili"][:20]:
-                print("      %s (%s)" % (valore, motivo))
-            if len(c["non_trattabili"]) > 20:
-                print("      ... e altri %d" % (len(c["non_trattabili"]) - 20))
+    stampa.rapporto(rapporto)
 
     if args.rapporto:
         Path(args.rapporto).write_text(
@@ -290,54 +296,63 @@ def cmd_decifra(args):
 # --------------------------------------------------------------------------- #
 def _parser():
     p = argparse.ArgumentParser(
-        prog="python -m proteo.cli",
-        description="Anonimizzazione reversibile di colonne di database.")
-    sub = p.add_subparsers(dest="comando", required=True)
+        # bin/proteo esporta PROTEO_PROG: l'aiuto deve mostrare il comando che
+        # l'utente ha davvero digitato, non quello interno.
+        prog=os.environ.get("PROTEO_PROG", "python -m proteo.cli"),
+        description="Anonimizzazione reversibile di colonne di database. "
+                    "Senza argomenti parte il menu guidato.")
+    p.add_argument("--config", help="file di configurazione "
+                                    "(default: ./proteo.json, ~/.proteo/proteo.json)")
+    p.set_defaults(func=cmd_menu, db=None)
+    sub = p.add_subparsers(dest="comando")
 
-    def con_db(nome, aiuto, chiede_chiave=False):
+    def comune(nome, aiuto, con_chiave=False):
         s = sub.add_parser(nome, help=aiuto)
-        s.add_argument("--url", help="URL SQLAlchemy (default: $PROTEO_URL)")
-        s.add_argument("--database", help="etichetta del registro "
-                                          "(default: il nome nell'URL)")
-        s.add_argument("--registro", default="registro",
-                       help="cartella del registro (default: ./registro)")
-        if chiede_chiave:
-            s.add_argument("--chiave", required=True, help="file di chiave")
-            s.add_argument("--policy", default="policy.json",
-                           help="file di policy (default: policy.json)")
+        s.add_argument("--config")
+        s.add_argument("--db", help="quale database del config")
+        s.add_argument("--url", help="URL SQLAlchemy (scavalca config e $PROTEO_URL)")
+        s.add_argument("--database", help="etichetta del registro")
+        s.add_argument("--registro", help="cartella del registro")
+        if con_chiave:
+            s.add_argument("--chiave", help="file di chiave")
+            s.add_argument("--policy", help="file di policy")
         return s
 
-    s = sub.add_parser("chiave", help="genera un file di chiave")
-    s.add_argument("percorso")
+    s = sub.add_parser("menu", help="il menu guidato")
+    s.add_argument("--config")
+    s.set_defaults(func=cmd_menu, db=None)
+
+    s = comune("chiave", "genera un file di chiave", con_chiave=True)
+    s.add_argument("percorso", nargs="?", help="dove crearla (default: dal config)")
     s.set_defaults(func=cmd_chiave)
 
-    s = con_db("tabelle", "elenca le tabelle del database")
+    s = comune("tabelle", "elenca le tabelle del database")
     s.add_argument("--schema", help="limita a uno schema")
     s.set_defaults(func=cmd_tabelle)
 
-    s = con_db("bozza-policy", "scrive una policy con tutte le colonne a 'mantieni'")
-    s.add_argument("--policy", default="policy.json")
+    s = comune("bozza-policy", "scrive una policy con tutte le colonne a 'mantieni'",
+               con_chiave=True)
     s.add_argument("--schema", help="limita a uno schema")
     s.add_argument("--tabelle", nargs="+", help="solo queste tabelle")
     s.add_argument("--sovrascrivi", action="store_true")
     s.set_defaults(func=cmd_bozza_policy)
 
-    s = con_db("stato", "cosa risulta al registro")
+    s = comune("stato", "cosa risulta al registro")
     s.set_defaults(func=cmd_stato)
 
-    s = con_db("verifica", "i cancelli fail-closed, senza scrivere", chiede_chiave=True)
+    s = comune("verifica", "i cancelli fail-closed, senza scrivere", con_chiave=True)
     s.add_argument("--verso", choices=("cifra", "decifra"), default="cifra")
     s.set_defaults(func=cmd_verifica)
 
-    s = con_db("anteprima", "prima/dopo su un campione, senza scrivere",
-               chiede_chiave=True)
+    s = comune("anteprima", "prima/dopo su un campione, senza scrivere",
+               con_chiave=True)
     s.add_argument("--verso", choices=("cifra", "decifra"), default="cifra")
     s.add_argument("--campione", type=int, default=8)
     s.set_defaults(func=cmd_anteprima)
 
     for nome, aiuto, funzione in (("cifra", "SCRIVE: applica la policy", cmd_cifra),
                                   ("decifra", "SCRIVE: riporta in chiaro", cmd_decifra)):
-        s = con_db(nome, aiuto, chiede_chiave=True)
+        s = comune(nome, aiuto, con_chiave=True)
         s.add_argument("--si", action="store_true",
                        help="salta la conferma interattiva")
         s.add_argument("--su-errore", dest="su_errore",

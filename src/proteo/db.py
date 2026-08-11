@@ -29,14 +29,25 @@ valore originale.
 
 import secrets
 
-from sqlalchemy import (Column, MetaData, String, Table, delete, func, insert,
-                       inspect, select, update)
+from sqlalchemy import (Column, MetaData, String, Table, create_engine, delete,
+                       func, insert, inspect, select, update)
+from sqlalchemy.engine import make_url
 
-__all__ = ["elenco_tabelle", "introspeziona", "conta", "leggi_distinti",
-           "applica_mappa", "azzera", "dividi_nome"]
+__all__ = ["crea_engine", "elenco_tabelle", "introspeziona", "conta",
+           "leggi_distinti", "applica_mappa", "azzera", "dividi_nome"]
 
 LOTTO_LETTURA = 50_000
 LOTTO_SCRITTURA = 10_000
+
+
+def crea_engine(url, **opzioni):
+    """Engine con le opzioni che servono a Proteo, per tutti i punti d'ingresso."""
+    u = make_url(url) if isinstance(url, str) else url
+    if u.drivername.startswith("mssql+pyodbc"):
+        # senza questo pyodbc manda gli INSERT della tabella di appoggio uno per
+        # uno: su un database remoto e' un round-trip di rete per valore distinto.
+        opzioni.setdefault("fast_executemany", True)
+    return create_engine(u, **opzioni)
 
 
 def dividi_nome(qualificato):
