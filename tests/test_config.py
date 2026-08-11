@@ -3,6 +3,7 @@
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -116,6 +117,59 @@ class PasswordNelConfig(unittest.TestCase):
     def test_senza_password_nessun_vincolo(self):
         """Non c'e' niente da proteggere: i permessi larghi non sono un problema."""
         cfg.carica(_scrivi(self.d, SENZA_PASSWORD, permessi=0o644))
+
+
+def _git(cartella, *argomenti):
+    return subprocess.run(("git",) + argomenti, cwd=str(cartella),
+                          capture_output=True, text=True)
+
+
+def _repo():
+    """Un repository git vero: le regole di esclusione le deve valutare git."""
+    d = Path(tempfile.mkdtemp())
+    if _git(d, "init", "-q").returncode != 0:
+        raise unittest.SkipTest("git non disponibile")
+    return d
+
+
+class ConfigDentroUnRepo(unittest.TestCase):
+    """Puo' starci — anche in una sottocartella — purche' sia escluso dai commit."""
+
+    def setUp(self):
+        self.repo = _repo()
+        self.dati = {"formato": cfg.FORMATO,
+                     "database": {"v": {"url": "postgresql://utente@host/v",
+                                        "password": "segreto"}}}
+
+    def test_rifiutato_se_verrebbe_committato(self):
+        p = _scrivi(self.repo, self.dati)
+        with self.assertRaises(cfg.ConfigNonValida) as e:
+            cfg.carica(p)
+        self.assertIn("gitignore", str(e.exception))
+
+    def test_accettato_se_escluso(self):
+        p = _scrivi(self.repo, self.dati)
+        (self.repo / ".gitignore").write_text(cfg.NOME_PREDEFINITO + "\n")
+        self.assertEqual(cfg.carica(p).voce("v")["password"], "segreto")
+
+    def test_accettato_in_sottocartella_esclusa(self):
+        sotto = self.repo / "distribuzione" / "locale"
+        sotto.mkdir(parents=True)
+        p = _scrivi(sotto, self.dati)
+        (self.repo / ".gitignore").write_text("distribuzione/locale/\n")
+        self.assertEqual(cfg.carica(p).voce("v")["password"], "segreto")
+
+    def test_un_file_gia_tracciato_non_e_escluso(self):
+        """Il .gitignore non toglie dai commit cio' che git segue gia'."""
+        p = _scrivi(self.repo, self.dati)
+        _git(self.repo, "add", "-f", cfg.NOME_PREDEFINITO)
+        (self.repo / ".gitignore").write_text(cfg.NOME_PREDEFINITO + "\n")
+        with self.assertRaises(cfg.ConfigNonValida) as e:
+            cfg.carica(p)
+        self.assertIn("git rm --cached", str(e.exception))
+
+    def test_senza_password_nessun_vincolo(self):
+        cfg.carica(_scrivi(self.repo, SENZA_PASSWORD))
 
 
 class Scrittura(unittest.TestCase):

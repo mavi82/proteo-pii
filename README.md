@@ -206,7 +206,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**90 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**95 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -313,9 +313,19 @@ perso, cioè una colonna che nessuno sa più se è cifrata.
 
 La **password** può stare nel config — è il file che descrive quel database — ma
 a due condizioni, verificate a ogni lettura: il file non dev'essere leggibile da
-altri utenti (`chmod 600`) e non deve stare dentro un repository git. Se manca,
-si prende da `$PROTEO_PASSWORD` o si chiede a terminale. Senza password nel file
-non c'è nessun vincolo: non c'è niente da proteggere.
+altri utenti (`chmod 600`) e non deve poter finire in un commit. Se manca, si
+prende da `$PROTEO_PASSWORD` o si chiede a terminale. Senza password nel file non
+c'è nessun vincolo: non c'è niente da proteggere.
+
+Dentro un repository il config può starci, anche in una sottocartella: la
+condizione non è *dove* sta il file, ma se `git` lo escluderebbe davvero. Lo
+chiede a git (`check-ignore`) invece di interpretare i `.gitignore` per conto
+suo, e se il file è già tracciato lo considera non escluso — un file che git
+segue continua a finire in ogni commit qualunque cosa dica il `.gitignore`.
+
+Per la **chiave** la regola resta più severa: niente repository, ignorata o no.
+Un `.gitignore` lì non basta, perché `git clean -xdf` cancella proprio i file
+ignorati, e perdere la chiave significa perdere i dati.
 
 ### Comandi singoli
 
@@ -387,6 +397,7 @@ proteo/
 │  ├─ checksum.py    verifica e calcolo dei checksum italiani
 │  ├─ surrogati.py   CF, PIVA, IBAN
 │  ├─ keyfile.py     la chiave
+│  ├─ repo.py        sono dentro un repo git? questo file e' escluso dai commit?
 │  ├─ policy.py      colonne dichiarate + verifica fail-closed
 │  ├─ registro.py    stato per colonna (file locali, una cartella per database)
 │  ├─ db.py          adattatore SQLAlchemy: introspezione, lettura, scrittura

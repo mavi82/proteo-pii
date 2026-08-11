@@ -30,17 +30,24 @@ significa un registro perso, cioe' una colonna che nessuno sa piu' se e' cifrata
 
 Tenerla nel config e' comodo e legittimo — e' il file che descrive *quel*
 database. Ma un file di config e' anche la cosa che si copia in un backup, si
-incolla in una chat per chiedere aiuto e si committa per distrazione. Quindi:
+incolla in una chat per chiedere aiuto e si committa per distrazione. Quindi,
 se contiene una password, Proteo si rifiuta di leggerlo quando e' leggibile ad
-altri utenti o quando sta dentro un repository git. Senza password nessun
-vincolo: non c'e' niente da proteggere.
+altri utenti o quando finirebbe in un commit.
+
+Dentro un repository puo' starci, anche in una sottocartella: la condizione non
+e' *dove* sta il file ma se `git` lo escluderebbe davvero. Si chiede a git
+stesso (`check-ignore`) invece di leggere i .gitignore a mano — le regole di
+esclusione sono piu' d'una, si annidano, e sbagliare a interpretarle qui
+significa dare il via libera a un file che verra' committato.
+
+Senza password nessun vincolo: non c'e' niente da proteggere.
 """
 
 import json
 import os
 from pathlib import Path
 
-from .keyfile import dentro_un_repo_git
+from .repo import dentro_un_repo_git, ignorato_da_git
 
 __all__ = ["Config", "ConfigNonValida", "carica", "percorso_predefinito",
            "NOME_PREDEFINITO"]
@@ -162,11 +169,14 @@ def carica(percorso):
             raise ConfigNonValida(
                 "%s contiene una password ed e' leggibile da altri utenti.\n"
                 "  chmod 600 %s" % (p, p))
-        if dentro_un_repo_git(p):
+        if dentro_un_repo_git(p) and not ignorato_da_git(p):
             raise ConfigNonValida(
-                "%s contiene una password e sta dentro un repository git: "
-                "basta un `git add -A` perche' finisca in un commit, e da li' in "
-                "ogni clone e in tutta la storia. Spostalo fuori dal repo (per "
-                "esempio in ~/.proteo/), oppure togli la password e lasciala a "
-                "$PROTEO_PASSWORD." % p)
+                "%s contiene una password, sta dentro un repository git e non e' "
+                "escluso dai commit: basta un `git add -A` perche' finisca in un "
+                "commit, e da li' in ogni clone e in tutta la storia.\n"
+                "  Escludilo:  echo '%s' >> %s/.gitignore\n"
+                "  Se e' gia' tracciato non basta il .gitignore, serve anche:  "
+                "git rm --cached %s\n"
+                "  In alternativa togli la password e lasciala a $PROTEO_PASSWORD."
+                % (p, p.name, p.parent, p.name))
     return Config(dati, p)

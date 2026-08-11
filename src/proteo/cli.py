@@ -43,6 +43,7 @@ import os
 import sys
 from pathlib import Path
 
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.engine import make_url
 
 from . import config as cfg
@@ -121,9 +122,17 @@ def _url(args, config, voce):
     return url
 
 
+def _apri(args, config, voce):
+    """Engine, o un errore leggibile: un URL storto non merita un traceback."""
+    try:
+        return db.crea_engine(_url(args, config, voce))
+    except ArgumentError as e:
+        raise Uscita("URL del database non utilizzabile: %s" % e)
+
+
 def _engine(args):
     config, voce = _config(args)
-    return db.crea_engine(_url(args, config, voce))
+    return _apri(args, config, voce)
 
 
 def _nome_database(args, config, voce, engine):
@@ -157,7 +166,7 @@ def _motore(args):
     except (PolicyNonValida, json.JSONDecodeError) as e:
         raise Uscita("policy illeggibile: %s" % e)
 
-    engine = db.crea_engine(_url(args, config, voce))
+    engine = _apri(args, config, voce)
     motore = Motore(engine, policy, chiave, kid, Registro(registro_p or "registro"),
                     _nome_database(args, config, voce, engine))
     print("database: %s   chiave: %s   registro: %s"
@@ -201,7 +210,7 @@ def cmd_bozza_policy(args):
     una riga per colonna — il costo che rende il fail-closed accettabile.
     """
     config, voce = _config(args)
-    engine = db.crea_engine(_url(args, config, voce))
+    engine = _apri(args, config, voce)
     tabelle = args.tabelle or db.elenco_tabelle(engine, args.schema)
     schema = db.introspeziona(engine, sorted(tabelle))
     policy = Policy({t: {c: {"strategia": "mantieni"} for c in sorted(colonne)}
@@ -226,7 +235,7 @@ def cmd_bozza_policy(args):
 
 def cmd_stato(args):
     config, voce = _config(args)
-    engine = db.crea_engine(_url(args, config, voce))
+    engine = _apri(args, config, voce)
     registro = Registro(_percorso(args, config, voce, "registro") or "registro")
     database = _nome_database(args, config, voce, engine)
     print("registro di %s:" % database)

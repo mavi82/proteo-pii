@@ -22,14 +22,14 @@ rivelare nulla, e non e' invertibile.
 import base64
 import json
 import os
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes, hmac
 
-__all__ = ["genera", "carica", "chiave_id", "dentro_un_repo_git",
-           "ChiaveEsistente", "ChiaveNonValida"]
+from .repo import dentro_un_repo_git
+
+__all__ = ["genera", "carica", "chiave_id", "ChiaveEsistente", "ChiaveNonValida"]
 
 FORMATO = "proteo-key-v1"
 _ETICHETTA_ID = b"proteo/identificativo-chiave"
@@ -51,16 +51,6 @@ def chiave_id(key):
     return h.finalize()[:8].hex()
 
 
-def dentro_un_repo_git(percorso):
-    try:
-        r = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
-                           cwd=str(Path(percorso).resolve().parent),
-                           capture_output=True, text=True, timeout=5)
-        return r.returncode == 0 and r.stdout.strip() == "true"
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
 def genera(percorso, forza_dentro_git=False):
     """Crea una nuova chiave a 256 bit e la salva. Ritorna (chiave, id).
 
@@ -74,9 +64,15 @@ def genera(percorso, forza_dentro_git=False):
             "%s esiste gia'. Sovrascriverlo renderebbe illeggibile tutto cio' che "
             "e' stato cifrato con la chiave attuale: spostalo a mano se sei sicuro." % p)
     if not forza_dentro_git and dentro_un_repo_git(p):
+        # Piu' severo di quanto si chiede al file di configurazione, che dentro
+        # un repo si accetta se e' ignorato: per la chiave un .gitignore non
+        # basta, perche' `git clean -xdf` cancella proprio i file ignorati e una
+        # chiave persa sono dati persi.
         raise ChiaveNonValida(
             "%s e' dentro un repository git: una chiave committata finisce in ogni "
-            "clone e in tutta la storia. Scegli un percorso fuori dal repo." % p)
+            "clone e in tutta la storia, e un .gitignore non basta — `git clean "
+            "-xdf` cancella proprio i file ignorati, e perdere la chiave significa "
+            "perdere i dati. Scegli un percorso fuori dal repo." % p)
 
     key = os.urandom(DIMENSIONE)
     kid = chiave_id(key)
