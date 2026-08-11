@@ -21,7 +21,8 @@ from proteo import db                                            # noqa: E402
 from proteo.checksum import cf_ok                                # noqa: E402
 from proteo.motore import Motore, VerificaFallita                # noqa: E402
 from proteo.policy import Policy                                 # noqa: E402
-from proteo.registro import CIFRATA, IN_CHIARO, Registro         # noqa: E402
+from proteo.registro import (AZZERATA, CIFRATA, IN_CHIARO,       # noqa: E402
+                             Registro, StatoIncoerente)
 
 CF = ["RSSMRA85H12F205Y", "BNCLGU78T04H501C", "VRDNNA90A41F839L", "MRTPLA65M15L219C"]
 CHIAVE = bytes(range(32))
@@ -201,6 +202,58 @@ class ValoriSporchi(unittest.TestCase):
         scarti = r["colonne"][0]["non_trattabili"]
         self.assertEqual([v for v, _ in scarti], ["NON-UN-CF"])
         self.assertIn("NON-UN-CF", _valori(self.engine, "clienti", "codice_fiscale"))
+
+
+class Azzeramento(Base):
+    """`azzera` e' l'unica operazione che distrugge invece di trasformare."""
+
+    def setUp(self):
+        super().setUp()
+        p = _policy()
+        p.tabelle["clienti"]["citta"] = {"strategia": "azzera"}
+        self.m = Motore(self.engine, p, CHIAVE, KID, self.reg, "ProvaDB")
+
+    def test_la_colonna_viene_svuotata(self):
+        r = self.m.esegui("cifra")
+        self.assertEqual(_valori(self.engine, "clienti", "citta"), [None] * 4)
+        voce = [c for c in r["colonne"] if c["colonna"] == "citta"][0]
+        self.assertEqual((voce["operazione"], voce["righe_aggiornate"]), ("azzera", 4))
+
+    def test_il_registro_la_distingue_da_una_cifrata(self):
+        self.m.esegui("cifra")
+        self.assertEqual(self.reg.stato("ProvaDB", "clienti", "citta"), AZZERATA)
+        voce = self.reg.leggi("ProvaDB", "clienti", "citta")
+        # nessuna chiave associata: suggerirebbe un recupero che non esiste
+        self.assertIsNone(voce["chiave_id"])
+
+    def test_decifra_non_riazzera_e_avvisa(self):
+        self.m.esegui("cifra")
+        avvisi = [p for p in self.m.verifica("decifra") if p.livello == "avviso"]
+        self.assertTrue(any("backup" in p.messaggio for p in avvisi))
+        # la decifratura delle altre colonne non deve essere bloccata da questa
+        self.assertEqual(self.m.errori("decifra"), [])
+        self.m.esegui("decifra")
+        self.assertEqual(_valori(self.engine, "clienti", "codice_fiscale"), CF)
+
+    def test_decifrarla_come_fosse_cifrata_e_bloccato(self):
+        self.m.esegui("cifra")
+        with self.assertRaises(StatoIncoerente) as e:
+            self.reg.verifica_prima_di_decifrare("ProvaDB", "clienti", "citta", KID)
+        self.assertIn("nessuna chiave", str(e.exception))
+
+    def test_anteprima_mostra_cosa_sparisce_senza_scrivere(self):
+        voci = [c for c in self.m.anteprima() if c["operazione"] == "azzera"]
+        self.assertEqual(len(voci), 1)
+        self.assertEqual(voci[0]["campione"], [("Milano", None)])
+        self.assertEqual(_valori(self.engine, "clienti", "citta"), ["Milano"] * 4)
+
+    def test_not_null_bloccato_prima_di_scrivere(self):
+        p = _policy()
+        p.tabelle["contratti"]["importo"] = {"strategia": "azzera"}   # NOT NULL
+        m = Motore(self.engine, p, CHIAVE, KID, self.reg, "ProvaDB")
+        with self.assertRaises(VerificaFallita):
+            m.esegui("cifra")
+        self.assertEqual(_valori(self.engine, "clienti", "codice_fiscale"), CF)
 
 
 class Anteprima(Base):

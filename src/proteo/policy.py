@@ -72,6 +72,12 @@ class Policy:
                 if r.get("strategia") == "cifra":
                     yield t, c, r
 
+    def colonne_da_azzerare(self):
+        for t, colonne in sorted(self.tabelle.items()):
+            for c, r in sorted(colonne.items()):
+                if r.get("strategia") == "azzera":
+                    yield t, c, r
+
     # -- persistenza -------------------------------------------------------- #
     @classmethod
     def carica(cls, percorso):
