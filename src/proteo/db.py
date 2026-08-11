@@ -33,8 +33,8 @@ from sqlalchemy import (Column, MetaData, String, Table, create_engine, delete,
                        func, insert, inspect, select, update)
 from sqlalchemy.engine import make_url
 
-__all__ = ["crea_engine", "elenco_tabelle", "introspeziona", "conta",
-           "leggi_distinti", "applica_mappa", "azzera", "dividi_nome"]
+__all__ = ["crea_engine", "prova_connessione", "elenco_tabelle", "introspeziona",
+           "conta", "leggi_distinti", "applica_mappa", "azzera", "dividi_nome"]
 
 LOTTO_LETTURA = 50_000
 LOTTO_SCRITTURA = 10_000
@@ -48,6 +48,20 @@ def crea_engine(url, **opzioni):
         # uno: su un database remoto e' un round-trip di rete per valore distinto.
         opzioni.setdefault("fast_executemany", True)
     return create_engine(u, **opzioni)
+
+
+def prova_connessione(engine):
+    """Apre una connessione e la chiude. Ritorna la versione del server.
+
+    `create_engine` non contatta nessuno: e' pigro, e un URL sbagliato sembra
+    funzionare finche' non serve davvero — cioe' a meta' di un'operazione. Qui
+    si paga subito il costo di scoprirlo.
+    """
+    with engine.connect() as conn:
+        conn.execute(select(1))
+    versione = getattr(engine.dialect, "server_version_info", None)
+    return "%s %s" % (engine.dialect.name,
+                      ".".join(str(x) for x in versione) if versione else "")
 
 
 def dividi_nome(qualificato):

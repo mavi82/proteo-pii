@@ -21,8 +21,10 @@ Tre regole di condotta:
 import getpass
 from pathlib import Path
 
+from sqlalchemy.engine import URL
+
 from . import config as cfg
-from . import db, keyfile, stampa
+from . import db, diagnosi, keyfile, repo, stampa
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
 from .registro import Registro
@@ -31,6 +33,17 @@ from .surrogati import ValoreNonTrattabile
 __all__ = ["avvia"]
 
 RIGA = "-" * 72
+
+# (driver SQLAlchemy, come si chiama, porta consueta). La porta e' un default,
+# non un vincolo: si puo' sempre scrivere altro.
+MOTORI = [
+    ("mssql+pyodbc",       "SQL Server",       1433),
+    ("postgresql+psycopg", "PostgreSQL",       5432),
+    ("mysql+pymysql",      "MySQL / MariaDB",  3306),
+    ("sqlite",             "SQLite (file)",    None),
+]
+
+DRIVER_ODBC = "ODBC Driver 18 for SQL Server"
 
 
 # --------------------------------------------------------------------------- #
@@ -71,6 +84,86 @@ def _scegli(titolo, voci):
 
 
 # --------------------------------------------------------------------------- #
+# La connessione, un pezzo alla volta
+# --------------------------------------------------------------------------- #
+def _componi_url():
+    """Host, porta, utente, password — invece di un URL da scrivere a memoria.
+
+    La stringa di connessione e' il punto in cui si perde piu' tempo: un URL
+    sbagliato non da' un errore che parli di URL, ma un errore del driver. E le
+    regole di scrittura sono insidiose — una password con `@` o `/` dentro
+    spezza l'URL a meta'. `URL.create` la codifica da solo, ed e' l'unico motivo
+    per cui questa funzione compone invece di far scrivere una riga.
+
+    Ritorna (url, password): la password sta a parte perche' chi chiama deve
+    poter decidere se salvarla o no.
+    """
+    driver = _scegli("Che database e'?",
+                     [(d, "%s%s" % (nome, "   (porta %d)" % porta if porta else ""))
+                      for d, nome, porta in MOTORI])
+    porta_consueta = dict((d, p) for d, _, p in MOTORI)[driver]
+
+    if driver == "sqlite":
+        percorso = Path(_chiedi("percorso del file .db")).expanduser().resolve()
+        return URL.create("sqlite", database=str(percorso)), None
+
+    host = _chiedi("host (nome o IP)")
+    porta = int(_chiedi("porta", str(porta_consueta)))
+    database = _chiedi("nome del database")
+    utente = _chiedi("utente")
+    password = getpass.getpass("password (invio per chiederla a ogni avvio): ") or None
+
+    query = {}
+    if driver == "mssql+pyodbc":
+        query["driver"] = _chiedi("driver ODBC", DRIVER_ODBC)
+        query["Encrypt"] = "yes"
+        # Sui server interni il certificato e' quasi sempre autofirmato, e senza
+        # questa risposta la connessione fallisce con un errore che parla di
+        # catena di certificati e non di configurazione.
+        if _conferma("il certificato del server e' autofirmato o interno?"):
+            query["TrustServerCertificate"] = "yes"
+    elif driver == "postgresql+psycopg":
+        if _conferma("pretendere una connessione cifrata (sslmode=require)?"):
+            query["sslmode"] = "require"
+
+    url = URL.create(driver, username=utente, password=password, host=host,
+                     port=porta, database=database, query=query)
+    return url.set(password=None) if password is None else url, password
+
+
+def _prova(url):
+    """Prova la connessione e racconta com'e' andata. True se ha funzionato."""
+    print("\nprovo a connettermi a %s..." % url.render_as_string(hide_password=True))
+    try:
+        engine = db.crea_engine(url)
+        versione = db.prova_connessione(engine)
+        engine.dispose()
+    except Exception as e:                              # noqa: BLE001
+        # Qualunque cosa: il fallimento arriva dal driver, e i driver sollevano
+        # di tutto — ImportError, OSError, eccezioni proprie. Quello che conta
+        # e' che il menu resti in piedi e dica cosa fare.
+        print("\nnon riesco a connettermi.\n  %s: %s" % (type(e).__name__, e))
+        cosa_fare = diagnosi.suggerimento(e)
+        if cosa_fare:
+            print("\n  %s" % cosa_fare)
+        return False
+    print("connessione riuscita — %s" % versione)
+    return True
+
+
+def _chiedi_connessione():
+    """Compone, prova, e non si arrende al primo errore."""
+    while True:
+        url, password = _componi_url()
+        if _prova(url if password is None else url.set(password=password)):
+            return url, password
+        if not _conferma("\nvuoi correggere i dati e riprovare?"):
+            print("i dati vengono salvati lo stesso: si correggono dal menu, "
+                  "voce 'connessione'.")
+            return url, password
+
+
+# --------------------------------------------------------------------------- #
 # Configurazione
 # --------------------------------------------------------------------------- #
 def _crea_config(percorso):
@@ -79,18 +172,8 @@ def _crea_config(percorso):
           "Nulla di quello che scrivi qui tocca il database: si salva e basta.\n")
 
     nome = _chiedi("nome breve per questo database (es. vendite)")
-    print("\nURL SQLAlchemy. Esempi:\n"
-          "  postgresql+psycopg://utente@host:5432/vendite\n"
-          "  mssql+pyodbc://utente@host:1433/VenditeDB"
-          "?driver=ODBC+Driver+18+for+SQL+Server\n"
-          "  mysql+pymysql://utente@host:3306/vendite\n")
-    url = _chiedi("url")
-
-    voce = {"url": url}
-    print("\nLa password puo' stare nel config, che verra' creato a 0600 e solo\n"
-          "fuori da un repository git. Se preferisci non scriverla, lasciala\n"
-          "vuota: verra' chiesta a ogni avvio.")
-    password = getpass.getpass("password (invio per non salvarla): ")
+    url, password = _chiedi_connessione()
+    voce = {"url": url.render_as_string(hide_password=False)}
     if password:
         voce["password"] = password
 
@@ -104,9 +187,25 @@ def _crea_config(percorso):
                     "database": {nome: voce}})
     salvato = c.salva(percorso)
     print("\nconfigurazione salvata in %s" % salvato)
-    if password:
-        print("contiene la password: permessi 0600, e non spostarla dentro il repo.")
+    _avvisa_se_committabile(salvato, password)
     return c
+
+
+def _avvisa_se_committabile(percorso, password):
+    """Un config con password che finirebbe in un commit non si rileggera'.
+
+    L'avviso sta qui e non solo in `config.carica`: scoprirlo al riavvio
+    successivo, quando non si ricorda piu' di aver risposto a queste domande,
+    e' il momento peggiore per scoprirlo.
+    """
+    if not password:
+        return
+    print("contiene la password: permessi 0600.")
+    if repo.dentro_un_repo_git(percorso) and not repo.ignorato_da_git(percorso):
+        print("\nATTENZIONE: sta dentro un repository git e non e' escluso dai "
+              "commit,\nquindi al prossimo avvio verra' rifiutato. Escludilo:\n"
+              "    echo '%s' >> %s/.gitignore"
+              % (percorso.name, percorso.parent))
 
 
 def _config(percorso=None):
@@ -278,6 +377,32 @@ def _azione_bozza_policy(config, nome, engine):
           "Poi torna qui: la policy viene riletta a ogni azione.")
 
 
+def _azione_connessione(config, nome):
+    """Prova la connessione, o la ricompone. True se i dati sono cambiati."""
+    voce = config.voce(nome)
+    scelta = _scegli("Connessione a %s" % (voce.get("etichetta") or nome), [
+        ("prova", "provala com'e'"),
+        ("rifai", "rifalla da capo (host, porta, utente, password)"),
+        ("indietro", "torna al menu"),
+    ])
+    if scelta == "indietro":
+        return False
+    if scelta == "prova":
+        _prova(_password_mancante(config, voce))
+        return False
+
+    url, password = _chiedi_connessione()
+    voce = dict(voce, url=url.render_as_string(hide_password=False))
+    voce.pop("password", None)
+    if password:
+        voce["password"] = password
+    config.dati["database"][nome] = voce
+    salvato = config.salva()
+    print("\nconfigurazione aggiornata: %s" % salvato)
+    _avvisa_se_committabile(salvato, password)
+    return True
+
+
 def _azione_chiave(config, nome, engine):
     percorso = config.risolvi(config.voce(nome), "chiave")
     print("\nLa chiave sostituisce il dizionario: e' l'unica cosa che riporta "
@@ -302,15 +427,16 @@ def _azione_chiave(config, nome, engine):
 # Ciclo principale
 # --------------------------------------------------------------------------- #
 VOCI = [
-    ("stato",     "stato del registro — cosa risulta gia' fatto"),
-    ("verifica",  "verifica (non scrive)"),
-    ("anteprima", "anteprima prima/dopo (non scrive)"),
-    ("cifra",     "CIFRA — scrive sul database"),
-    ("decifra",   "DECIFRA — riporta in chiaro, scrive sul database"),
-    ("policy",    "crea la bozza di policy"),
-    ("chiave",    "genera la chiave"),
-    ("cambia",    "cambia database"),
-    ("esci",      "esci"),
+    ("stato",       "stato del registro — cosa risulta gia' fatto"),
+    ("verifica",    "verifica (non scrive)"),
+    ("anteprima",   "anteprima prima/dopo (non scrive)"),
+    ("cifra",       "CIFRA — scrive sul database"),
+    ("decifra",     "DECIFRA — riporta in chiaro, scrive sul database"),
+    ("policy",      "crea la bozza di policy"),
+    ("chiave",      "genera la chiave"),
+    ("connessione", "connessione: provala o rifalla"),
+    ("cambia",      "cambia database"),
+    ("esci",        "esci"),
 ]
 
 
@@ -346,14 +472,34 @@ def avvia(percorso_config=None):
             if scelta == "cambia":
                 nome = _scegli_database(config) or nome
                 continue
+            if scelta == "connessione":
+                if _azione_connessione(config, nome):
+                    if engine is not None:                # i dati sono cambiati:
+                        engine.dispose()                  # la vecchia non vale piu'
+                    engine, aperto_per = None, None
+                _pausa()
+                continue
 
             # La connessione si apre alla prima azione che ne ha bisogno e resta
             # aperta finche' si lavora sullo stesso database: aprirne una nuova a
             # ogni voce di menu significa una password chiesta ogni volta.
             if scelta != "stato" and (engine is None or aperto_per != nome):
-                if engine is not None:
-                    engine.dispose()
-                engine = db.crea_engine(_password_mancante(config, voce))
+                try:
+                    engine = db.crea_engine(_password_mancante(config, voce))
+                    db.prova_connessione(engine)
+                except Exception as e:                    # noqa: BLE001
+                    # Il driver puo' sollevare di tutto, ImportError compreso: un
+                    # menu che muore qui costringe a ricominciare da capo, mentre
+                    # la cosa da fare e' quasi sempre a portata di una riga.
+                    print("\nnon riesco a connettermi.\n  %s: %s"
+                          % (type(e).__name__, e))
+                    cosa_fare = diagnosi.suggerimento(e)
+                    if cosa_fare:
+                        print("\n  %s" % cosa_fare)
+                    print("\nDalla voce 'connessione' puoi provarla o rifarla.")
+                    engine, aperto_per = None, None
+                    _pausa()
+                    continue
                 aperto_per = nome
 
             azione = {

@@ -12,6 +12,7 @@ uno script, e seguono l'ordine in cui vanno usati:
     chiave        genera il file di chiave (una volta sola, per sempre)
     tabelle       elenca le tabelle del database — serve a scrivere la policy
     bozza-policy  policy con TUTTE le colonne a 'mantieni', da correggere a mano
+    prova         prova solo la connessione
     stato         cosa risulta al registro
     verifica      i cancelli fail-closed, senza toccare nulla
     anteprima     prima/dopo su un campione, senza toccare nulla
@@ -47,7 +48,7 @@ from sqlalchemy.exc import ArgumentError
 from sqlalchemy.engine import make_url
 
 from . import config as cfg
-from . import db, keyfile, stampa
+from . import db, diagnosi, keyfile, stampa
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
 from .registro import Registro
@@ -122,12 +123,24 @@ def _url(args, config, voce):
     return url
 
 
+def _fallita(errore, cosa):
+    """Errore di connessione tradotto in una mossa. Non torna mai."""
+    cosa_fare = diagnosi.suggerimento(errore)
+    raise Uscita("%s: %s: %s%s"
+                 % (cosa, type(errore).__name__, errore,
+                    "\n\n  %s" % cosa_fare if cosa_fare else ""))
+
+
 def _apri(args, config, voce):
     """Engine, o un errore leggibile: un URL storto non merita un traceback."""
     try:
         return db.crea_engine(_url(args, config, voce))
     except ArgumentError as e:
         raise Uscita("URL del database non utilizzabile: %s" % e)
+    except Exception as e:                                  # noqa: BLE001
+        # `create_engine` importa il driver, e un driver che manca solleva di
+        # tutto — ImportError, OSError, eccezioni proprie. Vedi `diagnosi.py`.
+        _fallita(e, "non riesco a preparare la connessione")
 
 
 def _engine(args):
@@ -196,6 +209,18 @@ def cmd_chiave(args):
     print("identificativo: %s" % kid)
     print("\nCopiala in un posto sicuro insieme al registro. Perderla significa "
           "perdere i dati: non esiste alcun dizionario da cui recuperarli.")
+
+
+def cmd_prova(args):
+    """Solo la connessione: nessuna chiave, nessuna policy, nessuna scrittura."""
+    config, voce = _config(args)
+    engine = _apri(args, config, voce)
+    print("provo %s..." % engine.url.render_as_string(hide_password=True))
+    try:
+        versione = db.prova_connessione(engine)
+    except Exception as e:                                  # noqa: BLE001
+        _fallita(e, "connessione fallita")
+    print("connessione riuscita — %s" % versione)
 
 
 def cmd_tabelle(args):
@@ -334,6 +359,9 @@ def _parser():
     s = comune("chiave", "genera un file di chiave", con_chiave=True)
     s.add_argument("percorso", nargs="?", help="dove crearla (default: dal config)")
     s.set_defaults(func=cmd_chiave)
+
+    s = comune("prova", "prova solo la connessione")
+    s.set_defaults(func=cmd_prova)
 
     s = comune("tabelle", "elenca le tabelle del database")
     s.add_argument("--schema", help="limita a uno schema")

@@ -202,11 +202,12 @@ ancora scritto.
 | `motore.py` | ✅ | verifica → anteprima → esecuzione, con i cancelli fail-closed |
 | `config.py` | ✅ | configurazione per database, con le condizioni per tenerci la password |
 | `cli.py` | ✅ | riga di comando: chiave, bozza di policy, verifica, anteprima, cifra, decifra |
-| `menu.py` | ✅ | il menu guidato, per lavorare a mano |
+| `menu.py` | ✅ | il menu guidato, connessione compresa |
+| `diagnosi.py` | ✅ | da un errore del driver alla riga di comando che lo risolve |
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**95 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**105 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -285,6 +286,32 @@ Le voci che scrivono non si confermano con un tasto ma scrivendo `si`: da un
 menu numerato, un tasto di troppo è esattamente il modo in cui si lancia il
 comando accanto a quello che si voleva.
 
+### La connessione
+
+Non si scrive un URL a memoria: si risponde a host, porta, utente, password, e
+Proteo **prova subito a connettersi**. `create_engine` è pigro e non contatta
+nessuno, quindi una stringa sbagliata sembra funzionare fino a metà della prima
+operazione vera; la prova sposta la scoperta all'unico momento in cui costa
+poco.
+
+Quando fallisce, l'errore arriva dal driver e parla la lingua del driver.
+Proteo lo traduce nella mossa successiva:
+
+```
+non riesco a connettermi.
+  ImportError: libodbc.so.2: cannot open shared object file: No such file or directory
+
+  manca il gestore ODBC (unixODBC), che pyodbc carica a runtime:
+      apt install unixodbc          # Debian/Ubuntu
+    Non basta `pip install pyodbc`: quello è il ponte, questa è la libreria di sistema sotto.
+```
+
+Sono riconosciuti i casi che si incontrano davvero: driver ODBC assente o con il
+nome sbagliato, pacchetto Python mancante, credenziali rifiutate, certificato
+autofirmato, host che non si risolve, porta chiusa, firewall. Quando nessuna
+regola scatta non si inventa niente — un suggerimento sbagliato si prova, e fa
+perdere più tempo dell'errore che pretendeva di spiegare.
+
 ### La configurazione
 
 Un file per macchina, `./proteo.json` o `~/.proteo/proteo.json`, con un blocco
@@ -334,6 +361,7 @@ Gli argomenti non passati si leggono dal config, e **solo gli ultimi due
 scrivono**:
 
 ```bash
+bin/proteo prova                          # solo la connessione
 bin/proteo chiave ~/.proteo/vendite.key   # una volta sola, per sempre
 bin/proteo bozza-policy                   # tutte le colonne a 'mantieni'
 bin/proteo stato
@@ -405,7 +433,8 @@ proteo/
 │  ├─ config.py      configurazione per database
 │  ├─ stampa.py      come si mostrano problemi, anteprime e rapporti
 │  ├─ cli.py         riga di comando
-│  └─ menu.py        menu guidato
+│  ├─ menu.py        menu guidato
+│  └─ diagnosi.py    errori di connessione tradotti in mosse
 └─ tests/
 ```
 
