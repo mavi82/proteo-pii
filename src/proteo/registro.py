@@ -139,10 +139,17 @@ class Registro:
         tmp.replace(p)
         return voce
 
-    def avvia(self, database, tabella, colonna, tipo, tweak, chiave_id, verso):
-        """Segna l'inizio di un'operazione. `verso` = 'cifra' | 'decifra'."""
+    def avvia(self, database, tabella, colonna, tipo, tweak, chiave_id, verso,
+              lista=None):
+        """Segna l'inizio di un'operazione. `verso` = 'cifra' | 'decifra'.
+
+        `lista` e' l'impronta della lista di nomi usata, per i tipi che ne
+        dipendono: una lista modificata sposta le posizioni e cambia i
+        surrogati, quindi va riconosciuta prima di decifrare.
+        """
         return self._scrivi(database, tabella, colonna, stato=IN_CORSO, tipo=tipo,
-                            tweak=tweak, chiave_id=chiave_id, operazione=verso)
+                            tweak=tweak, chiave_id=chiave_id, operazione=verso,
+                            lista=lista)
 
     def concludi(self, database, tabella, colonna, stato, righe):
         v = self.leggi(database, tabella, colonna)
@@ -150,7 +157,8 @@ class Registro:
             raise StatoIncoerente("nessuna operazione avviata per %s.%s" % (tabella, colonna))
         return self._scrivi(database, tabella, colonna, stato=stato, tipo=v.get("tipo"),
                             tweak=v.get("tweak"), chiave_id=v.get("chiave_id"),
-                            operazione=v.get("operazione"), righe=righe)
+                            operazione=v.get("operazione"), lista=v.get("lista"),
+                            righe=righe)
 
     # -- controlli ---------------------------------------------------------- #
     def verifica_prima_di_cifrare(self, database, tabella, colonna):
@@ -169,7 +177,8 @@ class Registro:
                 "e' mai finita e la colonna e' in uno stato misto. Va risolta a mano."
                 % (dove, v.get("aggiornato")))
 
-    def verifica_prima_di_decifrare(self, database, tabella, colonna, chiave_id):
+    def verifica_prima_di_decifrare(self, database, tabella, colonna, chiave_id,
+                                    lista=None):
         v = self.leggi(database, tabella, colonna)
         dove = "%s.%s" % (tabella, colonna)
         if v is None or v["stato"] == IN_CHIARO:
@@ -192,4 +201,12 @@ class Registro:
                 "Decifrare con la chiave sbagliata riempirebbe la colonna di valori "
                 "irrecuperabili: serve il file di chiave giusto."
                 % (dove, v.get("chiave_id"), chiave_id))
+        if v.get("lista") and v["lista"] != lista:
+            # Una voce aggiunta in mezzo sposta la posizione di tutte quelle che
+            # seguono: i surrogati prodotti prima non si ritrovano piu'.
+            raise StatoIncoerente(
+                "%s e' stata cifrata con la lista %s, ma quella caricata e' %s. "
+                "La lista fa parte di cio' che serve per tornare indietro: "
+                "recupera la versione con cui e' stata cifrata."
+                % (dove, v.get("lista"), lista))
         return v

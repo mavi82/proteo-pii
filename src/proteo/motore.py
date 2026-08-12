@@ -13,6 +13,8 @@ davvero la regola fail-closed della policy, perche' una colonna dimenticata non
 produce nessun sintomo visibile — esce in chiaro e basta.
 """
 
+import re
+
 from . import db
 from .registro import (AZZERATA, CIFRATA, IN_CHIARO, IN_CORSO, Registro,
                        StatoIncoerente)
@@ -45,6 +47,33 @@ class Motore:
     # -- verifica ----------------------------------------------------------- #
     def schema(self):
         return db.introspeziona(self.engine, sorted(self.policy.tabelle))
+
+    def _impronta_lista(self, tipo):
+        """Impronta della lista usata da quel tipo, o None se non ne usa."""
+        quale = Surrogatore.LISTE.get(tipo)
+        return self.surr.lista(quale).impronta if quale else None
+
+    def _lista_troppo_lunga(self, tipo, col):
+        """La voce piu' lunga della lista entra nella colonna?
+
+        Con i tipi a lista la lunghezza NON si conserva: `Re` puo' diventare
+        `Acquaviva`. Su una colonna stretta l'UPDATE fallirebbe a meta' tabella,
+        o peggio troncherebbe in silenzio a seconda del motore — e un surrogato
+        troncato non torna piu' indietro.
+        """
+        quale = Surrogatore.LISTE.get(tipo)
+        if not quale or not col:
+            return None
+        larghezza = re.search(r"\((\d+)\)", col["tipo"])
+        if not larghezza:
+            return None
+        massimo = self.surr.lista(quale).lunghezza_massima
+        if massimo <= int(larghezza.group(1)):
+            return None
+        return ("la colonna e' %s ma la voce piu' lunga della lista ne occupa %d: "
+                "il surrogato non ci entrerebbe. Allarga la colonna, o togli "
+                "dalla lista le voci troppo lunghe PRIMA di cifrare."
+                % (col["tipo"], massimo))
 
     def _scelte(self, solo):
         """Filtro delle colonne su cui agire. `solo` = None -> tutte."""
@@ -82,12 +111,17 @@ class Motore:
                     "tipo %s: un surrogato testuale perderebbe gli zeri iniziali e "
                     "non tornerebbe indietro. Serve una colonna di testo." % col["tipo"]))
 
+            problema = self._lista_troppo_lunga(regola["tipo"], col)
+            if problema:
+                problemi.append(Problema("errore", dove, problema))
+
             try:
                 if verso == "cifra":
                     self.registro.verifica_prima_di_cifrare(self.database, tabella, colonna)
                 else:
                     self.registro.verifica_prima_di_decifrare(
-                        self.database, tabella, colonna, self.chiave_id)
+                        self.database, tabella, colonna, self.chiave_id,
+                        self._impronta_lista(regola["tipo"]))
             except StatoIncoerente as e:
                 problemi.append(Problema("errore", dove, str(e)))
 
@@ -214,7 +248,8 @@ class Motore:
                 progresso("%s.%s" % (tabella, colonna))
 
             self.registro.avvia(self.database, tabella, colonna, tipo,
-                                tweak.decode(), self.chiave_id, verso)
+                                tweak.decode(), self.chiave_id, verso,
+                                lista=self._impronta_lista(tipo))
             scarti = []
             coppie = self._coppie(tabella, colonna, tipo, tweak, verso,
                                   scarti, su_valore_non_trattabile)

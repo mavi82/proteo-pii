@@ -52,6 +52,37 @@ Il risultato ha tre proprietà che nessun altro approccio ottiene insieme:
 
 Lo stesso vale per la partita IVA (Luhn) e per l'IBAN (mod-97).
 
+### Nomi e cognomi: niente checksum, una lista
+
+Un nome non ha né struttura né carattere di controllo. Cifrarlo lettera per
+lettera darebbe `Mario → Xqfkz`: reversibile, ma un report costruito su quella
+colonna smette di sembrare un report. Il surrogato di un nome è quindi **un
+altro nome**: si cerca la sua posizione in una lista pubblica di nomi comuni, si
+cifra la posizione con FF1, si legge il nome che sta nella posizione risultante.
+
+```
+Mario     → Gaia        MARIA    → ANNA        giuseppe → valeria
+Rossi     → Di Carlo    DE LUCA  → ACQUAVIVA   D'Angelo → Roberti
+```
+
+Lo stile di scrittura si conserva (maiuscole, minuscole, iniziale, apostrofi);
+la lunghezza no, perché il surrogato è una voce della lista — per questo la
+verifica controlla **prima** che la voce più lunga entri nella colonna, invece
+di far fallire l'`UPDATE` a metà tabella.
+
+Non è il dizionario che il progetto rifiuta. Quello è la mappa `valore →
+surrogato`, che cresce quanto i dati e va custodita come i dati; questa è una
+lista di 250 nomi comuni, uguale per tutti, versionata col codice e pubblica:
+non contiene niente del database. La corrispondenza fra un nome e il suo
+surrogato non è scritta da nessuna parte — la determina la chiave.
+
+Il prezzo è dichiarato: **chi non è in lista non è trattabile**, e si ferma
+invece di produrre un valore che non tornerebbe indietro. La lista si allarga,
+ma solo *prima* di cifrare: aggiungere una voce sposta le posizioni di tutte
+quelle che seguono e cambia i surrogati già prodotti. Per questo di ogni lista
+si registra un'impronta accanto alla colonna, e chi prova a decifrare con una
+lista diversa viene fermato prima di scrivere.
+
 ### Esempio reale
 
 ```
@@ -194,7 +225,8 @@ ancora scritto.
 |---|---|---|
 | `fpe.py` | ✅ | FF1 (NIST SP 800-38G) — **9/9 vettori ufficiali NIST**, cifratura e decifratura |
 | `checksum.py` | ✅ | CF, partita IVA, IBAN, Luhn: verifica **e calcolo** |
-| `surrogati.py` | ✅ | CF, PIVA, IBAN strutturati e reversibili |
+| `surrogati.py` | ✅ | CF, PIVA, IBAN strutturati e reversibili; nomi e cognomi da lista |
+| `liste.py` | ✅ | nomi e cognomi: dominio della permutazione, con impronta |
 | `keyfile.py` | ✅ | generazione e custodia della chiave |
 | `policy.py` | ✅ | policy dichiarativa + verifica fail-closed |
 | `registro.py` | ✅ | stato per colonna, guardie contro doppia cifratura e chiave sbagliata |
@@ -208,7 +240,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**128 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**152 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -487,7 +519,18 @@ Dichiarati apertamente:
   default sicuro, ma se all'AI servono statistiche per età o genere quei dati
   devono venire da colonne dedicate.
 - **Il testo libero non è trattato.** Colonne come `note` o `descrizione`
-  richiedono riconoscimento di entità, non cifratura di campo.
+  richiedono riconoscimento di entità, non cifratura di campo. Una colonna
+  `nome`, invece, è tutta un nome: quella si tratta.
+- **I nomi fuori lista si fermano.** Nomi stranieri, doppi nomi rari, grafie con
+  errori: `ValoreNonTrattabile`, e decide la policy. Allargare la lista è
+  possibile, ma va fatto prima di cifrare.
+- **Il nome cifrato non conserva il genere.** `Mario` può diventare `Gaia`: se
+  servono statistiche per genere devono venire da una colonna dedicata. È la
+  stessa scelta fatta per la data di nascita dentro il codice fiscale.
+- **Sui nomi il determinismo espone di più.** `Mario` è frequente, e il
+  surrogato più frequente sarà quello che lo sostituisce: con una tabella delle
+  frequenze dei nomi italiani i più comuni si rimappano contando le occorrenze,
+  qualunque tweak. Sui codici fiscali non succede perché sono quasi tutti unici.
 - **Il determinismo rivela le uguaglianze.** Su una colonna a bassa cardinalità
   (`sesso`, `provincia`) il surrogato si rimappa contando le occorrenze, con
   qualunque tweak. Quelle colonne vanno generalizzate o lasciate in chiaro: il
@@ -513,7 +556,8 @@ proteo/
 ├─ src/proteo/
 │  ├─ fpe.py         FF1 — nessuna dipendenza da database
 │  ├─ checksum.py    verifica e calcolo dei checksum italiani
-│  ├─ surrogati.py   CF, PIVA, IBAN
+│  ├─ surrogati.py   CF, PIVA, IBAN, nomi e cognomi
+│  ├─ liste.py       le liste di nomi (dati/nomi.txt, dati/cognomi.txt)
 │  ├─ keyfile.py     la chiave
 │  ├─ repo.py        sono dentro un repo git? questo file e' escluso dai commit?
 │  ├─ policy.py      colonne dichiarate + verifica fail-closed

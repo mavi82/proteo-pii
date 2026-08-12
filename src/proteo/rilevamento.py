@@ -25,12 +25,30 @@ conferma deve poter vedere quanto e' netta la proposta: `14 su 14` e' un fatto,
 """
 
 from .checksum import cf_ok, iban_ok, piva_ok
+from .liste import carica
 
 __all__ = ["TIPI", "analizza", "proponi"]
 
+
+def _in_lista(quale):
+    """Riconosce per appartenenza alla lista: nomi e cognomi non hanno checksum.
+
+    E' un criterio piu' debole di un checksum — un cognome puo' anche essere un
+    nome di citta' — ma sulla colonna intera regge: quattro valori su quattro
+    che stanno tutti nell'elenco dei cognomi italiani sono un cognome, non una
+    coincidenza. La conferma resta comunque all'utente.
+    """
+    def verifica(valore):
+        return carica(quale).posizione(valore) is not None
+    return verifica
+
+
 # tipo -> come si riconosce. Sono gli stessi tipi che il Surrogatore sa trattare:
 # proporne uno che non si sa cifrare produrrebbe una policy che non parte.
-TIPI = (("CF", cf_ok), ("IBAN", iban_ok), ("PIVA", piva_ok))
+# L'ordine conta a parita' di valori riconosciuti: i checksum stanno prima
+# perche' sono una prova, l'appartenenza a una lista solo un indizio.
+TIPI = (("CF", cf_ok), ("IBAN", iban_ok), ("PIVA", piva_ok),
+        ("NOME", _in_lista("nomi")), ("COGNOME", _in_lista("cognomi")))
 
 # Quota di valori che devono passare il checksum perche' la colonna sia proposta.
 # Non 100%: in una colonna vera ci sono righe sporche, e pretendere la perfezione

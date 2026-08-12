@@ -17,10 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sqlalchemy import create_engine, text                       # noqa: E402
 
-from proteo import db                                            # noqa: E402
+from proteo import db, liste                                     # noqa: E402
 from proteo.checksum import cf_ok                                # noqa: E402
 from proteo.motore import Motore, VerificaFallita                # noqa: E402
 from proteo.policy import Policy                                 # noqa: E402
+from proteo.surrogati import Surrogatore                         # noqa: E402
 from proteo.registro import (AZZERATA, CIFRATA, IN_CHIARO,       # noqa: E402
                              Registro, StatoIncoerente)
 
@@ -305,6 +306,67 @@ class ColonnaSingola(Base):
     def test_anteprima_ristretta(self):
         voci = self.m.anteprima(solo=self.UNA)
         self.assertEqual([v["colonna"] for v in voci], ["codice_fiscale"])
+
+
+class Nomi(unittest.TestCase):
+    """Una colonna di nomi, dal database al ritorno."""
+
+    NOMI = ["Mario", "Anna", "Giuseppe", "Lucia"]
+
+    def _db(self, tipo_colonna="TEXT"):
+        e = create_engine("sqlite://")
+        with e.begin() as c:
+            c.execute(text("CREATE TABLE persone (id INTEGER PRIMARY KEY, "
+                           "nome %s)" % tipo_colonna))
+            for i, n in enumerate(self.NOMI):
+                c.execute(text("INSERT INTO persone VALUES (:i, :n)"), {"i": i, "n": n})
+        return e
+
+    def _motore(self, engine, reg=None):
+        p = Policy({"persone": {"id": {"strategia": "mantieni"},
+                                "nome": {"strategia": "cifra", "tipo": "NOME"}}})
+        return Motore(engine, p, CHIAVE, KID,
+                      reg or Registro(Path(tempfile.mkdtemp()) / "registro"), "ProvaDB")
+
+    def test_ciclo_completo(self):
+        engine = self._db()
+        m = self._motore(engine)
+        self.assertEqual(m.errori("cifra"), [])
+        m.esegui("cifra")
+
+        cifrati = _valori(engine, "persone", "nome")
+        self.assertNotEqual(cifrati, self.NOMI)
+        for v in cifrati:                       # sono nomi veri, non stringhe a caso
+            self.assertIsNotNone(liste.carica("nomi").posizione(v))
+
+        m.esegui("decifra")
+        self.assertEqual(_valori(engine, "persone", "nome"), self.NOMI)
+        engine.dispose()
+
+    def test_colonna_troppo_stretta_bloccata_prima_di_scrivere(self):
+        """Con le liste la lunghezza non si conserva: `Re` puo' diventare
+        `Acquaviva`, e su una colonna stretta l'UPDATE fallirebbe a meta'."""
+        engine = self._db("VARCHAR(4)")
+        m = self._motore(engine)
+        problemi = [p for p in m.errori("cifra") if "non ci entrerebbe" in p.messaggio]
+        self.assertEqual(len(problemi), 1)
+        with self.assertRaises(VerificaFallita):
+            m.esegui("cifra")
+        self.assertEqual(_valori(engine, "persone", "nome"), self.NOMI)
+        engine.dispose()
+
+    def test_lista_cambiata_blocca_la_decifratura(self):
+        """La lista fa parte di cio' che serve per tornare indietro."""
+        engine = self._db()
+        reg = Registro(Path(tempfile.mkdtemp()) / "registro")
+        self._motore(engine, reg).esegui("cifra")
+
+        altro = self._motore(engine, reg)
+        altro.surr = Surrogatore(CHIAVE, {"nomi": liste.Lista(
+            ["AGGIUNTA"] + liste.carica("nomi").voci, "nomi.txt")})
+        problemi = [p for p in altro.errori("decifra") if "lista" in p.messaggio]
+        self.assertEqual(len(problemi), 1)
+        engine.dispose()
 
 
 class Anteprima(Base):

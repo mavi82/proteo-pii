@@ -62,11 +62,39 @@ def _fpe_int(ff1, x, dominio, tweak, avanti):
     raise RuntimeError("cycle-walking non converge: dominio %d" % dominio)
 
 
+def _stessa_forma(originale, surrogato):
+    """Riporta sul surrogato lo stile di scrittura dell'originale.
+
+    `MARIO -> FABRIZIO`, `Mario -> Fabrizio`, `mario -> fabrizio`. La lunghezza
+    invece **non** si conserva: il surrogato e' una voce della lista, e le voci
+    hanno la lunghezza che hanno. E' il prezzo di un surrogato leggibile, e per
+    questo `motore.verifica` controlla prima che le voci piu' lunghe entrino
+    nella colonna.
+    """
+    if originale.isupper():
+        return surrogato.upper()
+    if originale.islower():
+        return surrogato.lower()
+    # `title()` capitalizza anche dopo l'apostrofo: D'ANGELO -> D'Angelo, che
+    # e' come si scrivono davvero.
+    return surrogato.title()
+
+
 class Surrogatore:
     """Genera surrogati reversibili a partire da una chiave AES."""
 
-    def __init__(self, key):
+    def __init__(self, key, liste=None):
         self.ff1 = FF1(key)
+        # Le liste si caricano alla prima richiesta: chi cifra solo codici
+        # fiscali non deve pagarne la lettura, e i test possono passarne di
+        # proprie senza toccare i file del pacchetto.
+        self._liste = dict(liste or {})
+
+    def lista(self, quale):
+        if quale not in self._liste:
+            from . import liste                    # importato qui: il nucleo
+            self._liste[quale] = liste.carica(quale)   # non dipende dai file
+        return self._liste[quale]
 
     # -- codice fiscale ----------------------------------------------------- #
     # Struttura: 6 lettere (cognome+nome) | 2 cifre anno | 1 lettera mese |
@@ -160,8 +188,54 @@ class Surrogatore:
         bban = "".join(bban)
         return paese + iban_check(paese, bban) + bban
 
+    # -- nomi e cognomi ----------------------------------------------------- #
+    # Qui non c'e' checksum ne' struttura da preservare: c'e' una LISTA, e si
+    # cifra la posizione dentro la lista. Il surrogato di un nome e' un altro
+    # nome, cosi' la colonna resta leggibile e un report continua a sembrare un
+    # report. Vedi `liste.py` per il perche' non sia il dizionario che il
+    # progetto rifiuta.
+    def _da_lista(self, quale, valore, tweak, avanti):
+        lista = self.lista(quale)
+        v = (valore or "").strip()
+        if not v:
+            raise ValoreNonTrattabile("valore vuoto")
+
+        # Il ritorno restituira' la voce di lista: se il valore differisce da
+        # essa per qualcosa che non siano le maiuscole (spazi doppi, per
+        # esempio), il giro non sarebbe esatto. Meglio fermarsi.
+        from .liste import normalizza
+        if normalizza(v) != v.upper():
+            raise ValoreNonTrattabile(
+                "%r non tornerebbe indietro identico (spazi o forma non "
+                "standard): normalizza il valore nella colonna" % v)
+
+        posizione = lista.posizione(v)
+        if posizione is None:
+            # Nessun ripiego: cifrarlo in un altro modo darebbe un valore che in
+            # decifratura verrebbe cercato nella lista e non trovato, cioe' un
+            # dato perso in silenzio.
+            raise ValoreNonTrattabile(
+                "%r non e' fra le %d voci di %s: aggiungilo alla lista PRIMA di "
+                "cifrare, oppure lascia che la policy lo salti"
+                % (v, len(lista), lista.nome))
+
+        nuova = _fpe_int(self.ff1, posizione, len(lista),
+                         tweak + b"|" + quale.encode(), avanti)
+        return _stessa_forma(v, lista.voce(nuova))
+
+    def nome(self, valore, tweak, avanti=True):
+        return self._da_lista("nomi", valore, tweak, avanti)
+
+    def cognome(self, valore, tweak, avanti=True):
+        return self._da_lista("cognomi", valore, tweak, avanti)
+
     # -- dispatch ----------------------------------------------------------- #
-    _TIPI = {"CF": cf, "PIVA": piva, "IBAN": iban}
+    _TIPI = {"CF": cf, "PIVA": piva, "IBAN": iban,
+             "NOME": nome, "COGNOME": cognome}
+
+    # tipi che dipendono da una lista: il chiamante deve sapere quali, per
+    # registrarne l'impronta e accorgersi se la lista cambia sotto i piedi
+    LISTE = {"NOME": "nomi", "COGNOME": "cognomi"}
 
     def cifra(self, tipo, valore, tweak):
         return self._TIPI[tipo](self, valore, tweak, True)
