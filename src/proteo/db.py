@@ -33,7 +33,8 @@ from sqlalchemy import (Column, MetaData, String, Table, create_engine, delete,
                        func, insert, inspect, select, update)
 from sqlalchemy.engine import make_url
 
-__all__ = ["crea_engine", "prova_connessione", "elenco_tabelle", "introspeziona",
+__all__ = ["crea_engine", "prova_connessione", "anomalie_url",
+           "elenco_tabelle", "introspeziona",
            "conta", "leggi_distinti", "applica_mappa", "azzera", "dividi_nome"]
 
 LOTTO_LETTURA = 50_000
@@ -48,6 +49,30 @@ def crea_engine(url, **opzioni):
         # uno: su un database remoto e' un round-trip di rete per valore distinto.
         opzioni.setdefault("fast_executemany", True)
     return create_engine(u, **opzioni)
+
+
+def anomalie_url(url):
+    """Cose sospette in un URL, prima ancora di provarlo.
+
+    Un URL puo' essere formalmente valido e insensato: `//sa@1433/edw` mette il
+    numero di porta al posto dell'host, e SQLAlchemy non ha motivo di
+    protestare. L'errore arriva molto dopo, dal driver, e parla di host
+    irraggiungibile — cioe' manda a cercare firewall e DNS invece che una riga
+    scritta storta. Qui si guarda l'URL per quello che vuole dire.
+    """
+    if url.drivername.startswith("sqlite"):
+        return []
+    fuori = []
+    if not url.host:
+        fuori.append("manca l'host: senza, il driver non sa a chi rivolgersi")
+    elif url.host.isdigit():
+        fuori.append("l'host e' fatto di sole cifre (%s): sembra il numero di "
+                     "porta finito nel campo sbagliato" % url.host)
+    if not url.database:
+        fuori.append("manca il nome del database")
+    if not url.port:
+        fuori.append("manca la porta: si usera' quella predefinita del driver")
+    return fuori
 
 
 def prova_connessione(engine):
@@ -137,6 +162,21 @@ def conta(engine, tabella, colonna=None):
         distinti = conn.execute(
             select(func.count(func.distinct(c))).where(c.is_not(None))).scalar_one()
     return righe, distinti
+
+
+def campiona(engine, tabella, colonna, quanti=200):
+    """Pochi valori non nulli, per capire cosa c'e' dentro la colonna.
+
+    `LIMIT` senza `DISTINCT` e senza `ORDER BY`: qui non serve un campione
+    rappresentativo, serve sapere se i valori passano un checksum. Su una
+    colonna con milioni di valori distinti un `SELECT DISTINCT` per rispondere a
+    questa domanda costerebbe piu' dell'intera cifratura.
+    """
+    t = _tabella(engine, tabella)
+    c = t.c[colonna]
+    with engine.connect() as conn:
+        return [r[0] for r in
+                conn.execute(select(c).where(c.is_not(None)).limit(quanti))]
 
 
 def leggi_distinti(engine, tabella, colonna, lotto=LOTTO_LETTURA):

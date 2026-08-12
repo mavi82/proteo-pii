@@ -24,7 +24,7 @@ from pathlib import Path
 from sqlalchemy.engine import URL
 
 from . import config as cfg
-from . import db, diagnosi, keyfile, repo, stampa
+from . import db, diagnosi, keyfile, rilevamento, repo, stampa
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
 from .registro import Registro
@@ -86,6 +86,32 @@ def _scegli(titolo, voci):
 # --------------------------------------------------------------------------- #
 # La connessione, un pezzo alla volta
 # --------------------------------------------------------------------------- #
+def _chiedi_host():
+    """Host, con un controllo su un errore che si vede solo molto dopo.
+
+    Un host di sole cifre e' quasi sempre la porta scritta una riga troppo in
+    alto: l'URL che ne esce (`@1433/edw`) e' formalmente valido, quindi nessuno
+    protesta finche' non si prova a connettersi — e a quel punto l'errore parla
+    di host irraggiungibile, che manda a cercare firewall e DNS.
+    """
+    while True:
+        host = _chiedi("host (nome o IP)")
+        if not host.isdigit():
+            return host
+        print("  '%s' sembra un numero di porta, non un host.\n"
+              "  Per un database sulla stessa macchina (anche in un container "
+              "Docker): 127.0.0.1" % host)
+
+
+def _chiedi_porta(consueta):
+    while True:
+        risposta = _chiedi("porta", str(consueta))
+        try:
+            return int(risposta)
+        except ValueError:
+            print("  la porta e' un numero (quella consueta e' %d)." % consueta)
+
+
 def _componi_url():
     """Host, porta, utente, password — invece di un URL da scrivere a memoria.
 
@@ -107,8 +133,8 @@ def _componi_url():
         percorso = Path(_chiedi("percorso del file .db")).expanduser().resolve()
         return URL.create("sqlite", database=str(percorso)), None
 
-    host = _chiedi("host (nome o IP)")
-    porta = int(_chiedi("porta", str(porta_consueta)))
+    host = _chiedi_host()
+    porta = _chiedi_porta(porta_consueta)
     database = _chiedi("nome del database")
     utente = _chiedi("utente")
     password = getpass.getpass("password (invio per chiederla a ogni avvio): ") or None
@@ -133,6 +159,8 @@ def _componi_url():
 
 def _prova(url):
     """Prova la connessione e racconta com'e' andata. True se ha funzionato."""
+    for anomalia in db.anomalie_url(url):
+        print("  attenzione: %s" % anomalia)
     print("\nprovo a connettermi a %s..." % url.render_as_string(hide_password=True))
     try:
         engine = db.crea_engine(url)
@@ -345,36 +373,116 @@ def _azione_scrittura(config, nome, engine, verso):
     stampa.rapporto(r)
 
 
-def _azione_bozza_policy(config, nome, engine):
-    voce = config.voce(nome)
-    destinazione = config.risolvi(voce, "policy")
-    if destinazione.exists():
-        print("\n%s esiste gia'." % destinazione)
-        if not _conferma("rigenerarla cancellerebbe le strategie gia' scelte. Procedo?"):
-            return
-
+def _scegli_tabelle(engine):
     tabelle = db.elenco_tabelle(engine)
     print("\n%d tabelle nel database." % len(tabelle))
-    if _conferma("limitare la policy ad alcune tabelle?"):
-        for t in tabelle:
-            print("  %s" % t)
-        scelte = _chiedi("quali (separate da spazio)").split()
-        tabelle = [t for t in tabelle if t in scelte] or tabelle
+    if not _conferma("vuoi lavorare solo su alcune tabelle?"):
+        return tabelle
+    for t in tabelle:
+        print("  %s" % t)
+    print("\nScrivile separate da spazio. Vale anche un pezzo di nome: 'clienti' "
+          "prende\ntutte quelle che lo contengono.")
+    pezzi = _chiedi("tabelle").split()
+    scelte = [t for t in tabelle
+              if t in pezzi or any(p.lower() in t.lower() for p in pezzi)]
+    if not scelte:
+        print("  nessuna corrispondenza: le prendo tutte.")
+        return tabelle
+    for t in scelte:
+        print("  scelta: %s" % t)
+    return scelte
+
+
+def _conferma_proposte(proposte):
+    """Colonna per colonna, con i numeri sotto gli occhi. Ritorna le accettate."""
+    quante = sum(len(c) for c in proposte.values())
+    print("\nRiconosciute %d colonne guardando i valori (non i nomi):" % quante)
+    for tabella in sorted(proposte):
+        for colonna, (tipo, quanti, esaminati) in sorted(proposte[tabella].items()):
+            print("  %-45s %-5s %d valori su %d passano il checksum"
+                  % ("%s.%s" % (tabella, colonna), tipo, quanti, esaminati))
+
+    scelta = _scegli("Cosa ne faccio?", [
+        ("tutte",  "cifra tutte quelle riconosciute"),
+        ("scelgo", "decido colonna per colonna"),
+        ("niente", "nessuna: le metto tutte a 'mantieni' e scelgo dal file"),
+    ])
+    if scelta == "niente":
+        return {}
+    if scelta == "tutte":
+        return proposte
+
+    accettate = {}
+    for tabella in sorted(proposte):
+        for colonna, dati in sorted(proposte[tabella].items()):
+            tipo, quanti, esaminati = dati
+            if _conferma("  cifrare %s.%s come %s (%d/%d)?"
+                         % (tabella, colonna, tipo, quanti, esaminati)):
+                accettate.setdefault(tabella, {})[colonna] = dati
+    return accettate
+
+
+def _azione_policy(config, nome, engine):
+    """Crea la policy, o la aggiorna senza perdere le scelte gia' fatte."""
+    destinazione = config.risolvi(config.voce(nome), "policy")
+    esistente = destinazione.exists()
+    if esistente:
+        print("\n%s esiste gia': le scelte gia' fatte restano, aggiungo solo le "
+              "colonne\nche nel frattempo sono comparse nel database." % destinazione)
+        policy = Policy.carica(destinazione)
+        tabelle = sorted(policy.tabelle) or _scegli_tabelle(engine)
+        if _conferma("vuoi aggiungere altre tabelle a quelle gia' nella policy?"):
+            tabelle = sorted(set(tabelle) | set(_scegli_tabelle(engine)))
+    else:
+        policy = Policy()
+        tabelle = _scegli_tabelle(engine)
 
     schema = db.introspeziona(engine, sorted(tabelle))
-    policy = Policy({t: {c: {"strategia": "mantieni"} for c in sorted(colonne)}
-                     for t, colonne in schema["tabelle"].items()})
+    nuove = [c for t in schema["tabelle"]
+             for c in schema["tabelle"][t] if not policy.regola(t, c)]
+    if not nuove:
+        print("\nnessuna colonna nuova: la policy e' gia' allineata allo schema.")
+        return
+
+    print("\n%d colonne da decidere. Campiono i valori per riconoscerle..."
+          % len(nuove))
+    proposte = rilevamento.proponi(
+        lambda t, c: db.campiona(engine, t, c),
+        {"tabelle": {t: {c: d for c, d in colonne.items()
+                         if not policy.regola(t, c)}
+                     for t, colonne in schema["tabelle"].items()}})
+
+    accettate = _conferma_proposte(proposte) if proposte else {}
+    if not proposte:
+        print("\nnessuna colonna riconosciuta: nessun valore passa i checksum di "
+              "CF, partita IVA o IBAN.")
+
+    aggiunte, tolte, fuori = policy.aggiorna(schema, accettate)
     policy.salva(destinazione)
-    print("\nbozza scritta in %s (%d tabelle, %d colonne, tutte 'mantieni')"
-          % (destinazione, len(policy.tabelle),
-             sum(len(c) for c in policy.tabelle.values())))
+
+    cifrate = [d for d, s in aggiunte if s == "cifra"]
+    print("\npolicy %s: %s" % ("aggiornata" if esistente else "creata", destinazione))
+    print("  %d colonne aggiunte, di cui %d da cifrare:" % (len(aggiunte), len(cifrate)))
+    for d in cifrate:
+        print("    %s" % d)
+    if tolte:
+        # Una colonna rinominata si presenta cosi': una tolta e una aggiunta come
+        # 'mantieni'. Non si puo' distinguere dallo schema, ma si puo' dire.
+        print("\n  %d colonne non esistono piu' e sono state tolte:" % len(tolte))
+        for d in tolte:
+            print("    %s" % d)
+        print("  Se sono state RINOMINATE, le nuove sono nate 'mantieni', "
+              "cioe' in chiaro:\n  controllale prima di cifrare.")
+    if fuori:
+        print("\n  la policy nomina tabelle che nel database non ci sono: %s"
+              % ", ".join(fuori))
     if schema["foreign_key"]:
-        print("\nforeign key rilevate — i due lati devono ricevere lo stesso tweak:")
+        print("\nforeign key — i due lati devono ricevere lo stesso tweak:")
         for (t1, c1), (t2, c2) in schema["foreign_key"]:
             print("  %s.%s -> %s.%s" % (t1, c1, t2, c2))
-    print("\nOra apri il file e metti {\"strategia\": \"cifra\", \"tipo\": \"CF\"}\n"
-          "sulle colonne da trattare (tipi: CF, PIVA, IBAN; 'azzera' per svuotare).\n"
-          "Poi torna qui: la policy viene riletta a ogni azione.")
+    print("\nIl resto e' 'mantieni'. Per svuotare una colonna di testo libero "
+          "metti\n\"strategia\": \"azzera\" nel file: quello va deciso a mano, "
+          "perche' non torna indietro.")
 
 
 def _azione_connessione(config, nome):
@@ -432,7 +540,7 @@ VOCI = [
     ("anteprima",   "anteprima prima/dopo (non scrive)"),
     ("cifra",       "CIFRA — scrive sul database"),
     ("decifra",     "DECIFRA — riporta in chiaro, scrive sul database"),
-    ("policy",      "crea la bozza di policy"),
+    ("policy",      "policy: creala o aggiornala (riconosce le colonne)"),
     ("chiave",      "genera la chiave"),
     ("connessione", "connessione: provala o rifalla"),
     ("cambia",      "cambia database"),
@@ -506,7 +614,7 @@ def avvia(percorso_config=None):
                 "stato": _azione_stato,
                 "verifica": _azione_verifica,
                 "anteprima": _azione_anteprima,
-                "policy": _azione_bozza_policy,
+                "policy": _azione_policy,
                 "chiave": _azione_chiave,
                 "cifra": lambda c, n, e: _azione_scrittura(c, n, e, "cifra"),
                 "decifra": lambda c, n, e: _azione_scrittura(c, n, e, "decifra"),

@@ -203,11 +203,12 @@ ancora scritto.
 | `config.py` | ✅ | configurazione per database, con le condizioni per tenerci la password |
 | `cli.py` | ✅ | riga di comando: chiave, bozza di policy, verifica, anteprima, cifra, decifra |
 | `menu.py` | ✅ | il menu guidato, connessione compresa |
+| `rilevamento.py` | ✅ | riconosce CF/PIVA/IBAN campionando i valori |
 | `diagnosi.py` | ✅ | da un errore del driver alla riga di comando che lo risolve |
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**105 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**122 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -312,6 +313,49 @@ autofirmato, host che non si risolve, porta chiusa, firewall. Quando nessuna
 regola scatta non si inventa niente — un suggerimento sbagliato si prova, e fa
 perdere più tempo dell'errore che pretendeva di spiegare.
 
+### Scrivere la policy senza scriverla
+
+Il fail-closed pretende una riga per ogni colonna. Su dieci colonne è un
+fastidio; su un data warehouse è un lavoro che nessuno fa bene fino in fondo — e
+una policy scritta male è peggio di una assente, perché dà l'impressione che
+qualcuno abbia guardato.
+
+Quindi Proteo la riconosce **dai valori, non dai nomi**: legge un campione di
+ogni colonna di testo e guarda se passano i checksum.
+
+```
+5 colonne da decidere. Campiono i valori per riconoscerle...
+
+Riconosciute 2 colonne guardando i valori (non i nomi):
+  clienti.codice_fiscale       CF    4 valori su 4 passano il checksum
+  clienti.piva                 PIVA  4 valori su 4 passano il checksum
+
+Cosa ne faccio?
+  1) cifra tutte quelle riconosciute
+  2) decido colonna per colonna
+  3) nessuna: le metto tutte a 'mantieni' e scelgo dal file
+```
+
+`RSSMRA85H12F205Y` è riconoscibile per quello che è, si chiami la colonna
+`codice_fiscale`, `cf_cli`, `taxid` o `campo7`: i nomi mentono e cambiano fra
+sistemi, il checksum no. I numeri restano in vista perché `14 su 14` è un fatto
+mentre `8 su 14` è una colonna mista che merita un'occhiata, e **la proposta va
+confermata**: un rilevatore che decidesse da solo sposterebbe la responsabilità
+della policy da chi conosce i dati a un'euristica, che è esattamente ciò che il
+fail-closed esiste per impedire.
+
+La stessa cosa da riga di comando:
+
+```bash
+bin/proteo bozza-policy --rileva
+```
+
+Rilanciarlo dopo una migration aggiunge solo le colonne comparse nel frattempo,
+senza toccare le decisioni già scritte. È così che una policy sopravvive al
+tempo: se rigenerarla cancellasse ogni `cifra` scelto a mano, non la si
+rigenererebbe mai e invecchierebbe — cioè il problema che il fail-closed doveva
+impedire.
+
 ### La configurazione
 
 Un file per macchina, `./proteo.json` o `~/.proteo/proteo.json`, con un blocco
@@ -371,9 +415,9 @@ bin/proteo cifra --rapporto rapporto.json
 bin/proteo decifra
 ```
 
-`bozza-policy` legge lo schema e scrive **tutte** le colonne come `mantieni`,
-elencando in coda le foreign key: si apre il file e si cambia in `cifra` ciò che
-va trattato. È ciò che rende sopportabile il fail-closed senza indebolirlo.
+`bozza-policy` allinea la policy allo schema: le colonne nuove entrano come
+`mantieni`, le scelte già fatte non si toccano mai. Con `--rileva` propone da sé
+le colonne da cifrare (vedi sotto).
 
 `cifra` richiama la verifica da sé e chiede conferma esplicita; `--si` la salta,
 per cron e script. `--url`, `--chiave`, `--policy`, `--registro` scavalcano il
@@ -434,6 +478,7 @@ proteo/
 │  ├─ stampa.py      come si mostrano problemi, anteprime e rapporti
 │  ├─ cli.py         riga di comando
 │  ├─ menu.py        menu guidato
+│  ├─ rilevamento.py cosa contiene una colonna, guardando i valori
 │  └─ diagnosi.py    errori di connessione tradotti in mosse
 └─ tests/
 ```

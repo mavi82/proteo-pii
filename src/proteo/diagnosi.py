@@ -38,10 +38,23 @@ _REGOLE = [
     (("no module named 'pymysql'",),
      "manca il driver MySQL:  .venv/bin/pip install PyMySQL"),
 
+    # Prima del caso generico: SQL Server usa lo stesso 18456 ("Login failed")
+    # anche quando le credenziali sono giuste ma il database non si apre. Senza
+    # questa regola si va a caccia della password per un'ora, e la password e'
+    # corretta.
+    (("cannot open database", "requested by the login"),
+     "le credenziali vanno bene, ma quel database non si apre: non esiste, si "
+     "chiama diversamente, o l'utente non ha accesso.\n"
+     "  I nomi veri:  SELECT name FROM sys.databases\n"
+     "  Su Linux SQL Server distingue maiuscole e minuscole nei nomi."),
+
     (("login failed for user", "password authentication failed",
       "access denied for user", "authentication failed"),
      "utente o password non accettati dal server. La password non e' stata "
-     "provata due volte: se e' nel config, correggila li'."),
+     "provata due volte: se e' nel config, correggila li'.\n"
+     "  Se sei sicuro delle credenziali, prova a connetterti senza indicare il "
+     "database: SQL Server risponde 'Login failed' anche quando l'accesso e' "
+     "buono ma il database richiesto non si apre."),
 
     (("certificate verify failed", "self-signed certificate", "ssl provider",
       "certificate chain"),

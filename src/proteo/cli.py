@@ -11,7 +11,7 @@ uno script, e seguono l'ordine in cui vanno usati:
 
     chiave        genera il file di chiave (una volta sola, per sempre)
     tabelle       elenca le tabelle del database — serve a scrivere la policy
-    bozza-policy  policy con TUTTE le colonne a 'mantieni', da correggere a mano
+    bozza-policy  allinea la policy allo schema (--rileva riconosce le colonne)
     prova         prova solo la connessione
     stato         cosa risulta al registro
     verifica      i cancelli fail-closed, senza toccare nulla
@@ -48,7 +48,7 @@ from sqlalchemy.exc import ArgumentError
 from sqlalchemy.engine import make_url
 
 from . import config as cfg
-from . import db, diagnosi, keyfile, stampa
+from . import db, diagnosi, keyfile, rilevamento, stampa
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
 from .registro import Registro
@@ -215,6 +215,8 @@ def cmd_prova(args):
     """Solo la connessione: nessuna chiave, nessuna policy, nessuna scrittura."""
     config, voce = _config(args)
     engine = _apri(args, config, voce)
+    for anomalia in db.anomalie_url(engine.url):
+        print("attenzione: %s" % anomalia)
     print("provo %s..." % engine.url.render_as_string(hide_password=True))
     try:
         versione = db.prova_connessione(engine)
@@ -229,33 +231,58 @@ def cmd_tabelle(args):
 
 
 def cmd_bozza_policy(args):
-    """Policy con ogni colonna a 'mantieni': il fail-closed vuole tutte le colonne.
+    """Allinea la policy allo schema: il fail-closed vuole tutte le colonne.
 
-    Si scrive la bozza completa e la si corregge, invece di far scrivere a mano
-    una riga per colonna — il costo che rende il fail-closed accettabile.
+    Le colonne nuove entrano come `mantieni`, oppure come `cifra` se `--rileva`
+    le riconosce dai valori. Le scelte gia' scritte non si toccano mai: una
+    policy che si rigenera da capo perde ogni decisione presa a mano, quindi in
+    pratica non la si rigenera e la si lascia invecchiare.
     """
     config, voce = _config(args)
     engine = _apri(args, config, voce)
-    tabelle = args.tabelle or db.elenco_tabelle(engine, args.schema)
-    schema = db.introspeziona(engine, sorted(tabelle))
-    policy = Policy({t: {c: {"strategia": "mantieni"} for c in sorted(colonne)}
-                     for t, colonne in schema["tabelle"].items()})
-
     destinazione = _percorso(args, config, voce, "policy") or Path("policy.json")
-    if destinazione.exists() and not args.sovrascrivi:
-        raise Uscita("%s esiste gia': una bozza rigenerata cancellerebbe le "
-                     "strategie gia' scelte. Usa --sovrascrivi se e' cio' che vuoi."
-                     % destinazione)
+
+    if destinazione.exists():
+        policy = Policy.carica(destinazione)
+        tabelle = args.tabelle or sorted(policy.tabelle) or \
+            db.elenco_tabelle(engine, args.schema)
+    else:
+        policy = Policy()
+        tabelle = args.tabelle or db.elenco_tabelle(engine, args.schema)
+
+    schema = db.introspeziona(engine, sorted(tabelle))
+    proposte = {}
+    if args.rileva:
+        # solo le colonne ancora da decidere: campionare quelle gia' scelte
+        # costerebbe letture inutili e non cambierebbe niente
+        da_decidere = {"tabelle": {t: {c: d for c, d in colonne.items()
+                                       if not policy.regola(t, c)}
+                                   for t, colonne in schema["tabelle"].items()}}
+        proposte = rilevamento.proponi(
+            lambda t, c: db.campiona(engine, t, c, args.campione), da_decidere)
+
+    aggiunte, tolte, fuori = policy.aggiorna(schema, proposte)
     policy.salva(destinazione)
-    print("bozza scritta in %s (%d tabelle, %d colonne, tutte 'mantieni')"
-          % (destinazione, len(policy.tabelle),
-             sum(len(c) for c in policy.tabelle.values())))
+
+    cifrate = [d for d, s in aggiunte if s == "cifra"]
+    print("%s: %d colonne aggiunte, di cui %d da cifrare"
+          % (destinazione, len(aggiunte), len(cifrate)))
+    for tabella in sorted(proposte):
+        for colonna, (tipo, quanti, esaminati) in sorted(proposte[tabella].items()):
+            print("  %-45s %-5s %d/%d" % ("%s.%s" % (tabella, colonna),
+                                          tipo, quanti, esaminati))
+    if tolte:
+        print("\n%d colonne non esistono piu' e sono state tolte: %s"
+              % (len(tolte), ", ".join(tolte)))
+        print("Se sono state RINOMINATE, le nuove sono nate 'mantieni', "
+              "cioe' in chiaro.")
+    if fuori:
+        print("\nla policy nomina tabelle che nel database non ci sono: %s"
+              % ", ".join(fuori))
     if schema["foreign_key"]:
-        print("\nforeign key rilevate — i due lati devono ricevere lo stesso tweak:")
+        print("\nforeign key — i due lati devono ricevere lo stesso tweak:")
         for (t1, c1), (t2, c2) in schema["foreign_key"]:
             print("  %s.%s -> %s.%s" % (t1, c1, t2, c2))
-    print("\nOra apri il file e metti {\"strategia\": \"cifra\", \"tipo\": \"CF\"} "
-          "sulle colonne da trattare (tipi: CF, PIVA, IBAN).")
 
 
 def cmd_stato(args):
@@ -371,7 +398,11 @@ def _parser():
                con_chiave=True)
     s.add_argument("--schema", help="limita a uno schema")
     s.add_argument("--tabelle", nargs="+", help="solo queste tabelle")
-    s.add_argument("--sovrascrivi", action="store_true")
+    s.add_argument("--rileva", action="store_true",
+                   help="riconosce CF/PIVA/IBAN campionando i valori e propone "
+                        "'cifra' sulle colonne nuove")
+    s.add_argument("--campione", type=int, default=200,
+                   help="quanti valori guardare per colonna (default: 200)")
     s.set_defaults(func=cmd_bozza_policy)
 
     s = comune("stato", "cosa risulta al registro")

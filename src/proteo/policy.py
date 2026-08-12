@@ -78,6 +78,46 @@ class Policy:
                 if r.get("strategia") == "azzera":
                     yield t, c, r
 
+    # -- crescita ----------------------------------------------------------- #
+    def aggiorna(self, schema, proposte=None):
+        """Allinea la policy allo schema **senza toccare le scelte gia' fatte**.
+
+        E' il modo in cui una policy sopravvive al tempo: rigenerarla da capo
+        cancellerebbe ogni `cifra` deciso a mano, quindi in pratica non la si
+        rigenera mai e la si lascia invecchiare — cioe' esattamente il problema
+        che il fail-closed doveva impedire.
+
+        Le colonne nuove entrano dalla proposta di `rilevamento` se ce n'e' una,
+        altrimenti come `mantieni`. Quelle sparite dallo schema vengono tolte,
+        perche' altrimenti la verifica si fermerebbe su una colonna che non
+        esiste piu'.
+
+        Ritorna (aggiunte, tolte, fuori_schema): tre elenchi da mostrare. Le
+        tolte vanno lette: una colonna rinominata si presenta come una tolta piu'
+        una aggiunta, e quella aggiunta nasce `mantieni`, cioe' in chiaro.
+        """
+        proposte = proposte or {}
+        aggiunte, tolte = [], []
+
+        for tabella, colonne in schema.get("tabelle", {}).items():
+            regole = self.tabelle.setdefault(tabella, {})
+            for colonna in sorted(colonne):
+                if colonna in regole:
+                    continue
+                proposta = proposte.get(tabella, {}).get(colonna)
+                if proposta:
+                    regole[colonna] = {"strategia": "cifra", "tipo": proposta[0]}
+                else:
+                    regole[colonna] = {"strategia": "mantieni"}
+                aggiunte.append(("%s.%s" % (tabella, colonna),
+                                 regole[colonna]["strategia"]))
+            for colonna in sorted(set(regole) - set(colonne)):
+                del regole[colonna]
+                tolte.append("%s.%s" % (tabella, colonna))
+
+        fuori = sorted(set(self.tabelle) - set(schema.get("tabelle", {})))
+        return aggiunte, tolte, fuori
+
     # -- persistenza -------------------------------------------------------- #
     @classmethod
     def carica(cls, percorso):
