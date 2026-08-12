@@ -46,12 +46,30 @@ class Motore:
     def schema(self):
         return db.introspeziona(self.engine, sorted(self.policy.tabelle))
 
-    def verifica(self, verso="cifra"):
-        """Problemi di policy, di schema e di stato. Lista vuota = si puo' partire."""
+    def _scelte(self, solo):
+        """Filtro delle colonne su cui agire. `solo` = None -> tutte."""
+        if solo is None:
+            return lambda t, c: True
+        scelte = {(t, c) for t, c in solo}
+        return lambda t, c: (t, c) in scelte
+
+    def verifica(self, verso="cifra", solo=None):
+        """Problemi di policy, di schema e di stato. Lista vuota = si puo' partire.
+
+        `solo` restringe i controlli di **stato** alle colonne indicate, non
+        quelli di policy: il fail-closed vale sempre sull'intera policy, perche'
+        una colonna dimenticata resta dimenticata anche se in questo momento se
+        ne sta trattando un'altra. Lo stato invece e' per colonna, e una colonna
+        gia' cifrata la settimana scorsa non deve impedire di trattare quella
+        accanto.
+        """
         schema = self.schema()
         problemi = list(self.policy.verifica(schema))
+        scelta = self._scelte(solo)
 
         for tabella, colonna, regola in self.policy.colonne_da_cifrare():
+            if not scelta(tabella, colonna):
+                continue
             dove = "%s.%s" % (tabella, colonna)
             col = schema["tabelle"].get(tabella, {}).get(colonna)
 
@@ -73,10 +91,10 @@ class Motore:
             except StatoIncoerente as e:
                 problemi.append(Problema("errore", dove, str(e)))
 
-        problemi.extend(self._verifica_azzeramenti(verso))
+        problemi.extend(self._verifica_azzeramenti(verso, scelta))
         return problemi
 
-    def _verifica_azzeramenti(self, verso):
+    def _verifica_azzeramenti(self, verso, scelta=None):
         """`azzera` distrugge: qui si dice ad alta voce cosa non tornera' indietro.
 
         Non e' un errore — l'utente l'ha chiesto dichiarandolo nella policy — ma
@@ -85,6 +103,8 @@ class Motore:
         """
         problemi = []
         for tabella, colonna, _ in self.policy.colonne_da_azzerare():
+            if scelta and not scelta(tabella, colonna):
+                continue
             dove = "%s.%s" % (tabella, colonna)
             stato = self.registro.stato(self.database, tabella, colonna)
             if stato == IN_CORSO:
@@ -108,14 +128,17 @@ class Motore:
                     "tornano indietro nemmeno con la chiave."))
         return problemi
 
-    def errori(self, verso="cifra"):
-        return [p for p in self.verifica(verso) if p.livello == "errore"]
+    def errori(self, verso="cifra", solo=None):
+        return [p for p in self.verifica(verso, solo) if p.livello == "errore"]
 
     # -- anteprima ---------------------------------------------------------- #
-    def anteprima(self, n=8, verso="cifra"):
+    def anteprima(self, n=8, verso="cifra", solo=None):
         """Campione prima/dopo, senza scrivere nulla. Il controllo a occhio."""
         out = []
+        scelta = self._scelte(solo)
         for tabella, colonna, regola in self.policy.colonne_da_cifrare():
+            if not scelta(tabella, colonna):
+                continue
             tweak = self.policy.tweak(tabella, colonna)
             righe, distinti = db.conta(self.engine, tabella, colonna)
             campione, scarti = [], []
@@ -144,6 +167,8 @@ class Motore:
         # per sparire: e' l'ultimo momento in cui si possono ancora vedere.
         if verso == "cifra":
             for tabella, colonna, _ in self.policy.colonne_da_azzerare():
+                if not scelta(tabella, colonna):
+                    continue
                 righe, distinti = db.conta(self.engine, tabella, colonna)
                 campione = []
                 gen = db.leggi_distinti(self.engine, tabella, colonna, lotto=max(n, 64))
@@ -160,7 +185,8 @@ class Motore:
         return out
 
     # -- esecuzione --------------------------------------------------------- #
-    def esegui(self, verso="cifra", su_valore_non_trattabile="ferma", progresso=None):
+    def esegui(self, verso="cifra", su_valore_non_trattabile="ferma", progresso=None,
+               solo=None):
         """Applica la policy. `verso` = 'cifra' | 'decifra'.
 
         su_valore_non_trattabile:
@@ -168,13 +194,21 @@ class Motore:
           'salta'               — lo si lascia com'e'. **Resta in chiaro**: e' una
                                   fuga di dati, quindi finisce nel rapporto e nel
                                   registro invece di essere silenziosamente ignorata.
+
+        `solo` = iterabile di (tabella, colonna): tratta soltanto quelle. Serve a
+        lavorare una colonna alla volta — la policy resta il documento completo e
+        viene verificata per intero, ma si scrive solo dove si e' deciso di
+        scrivere adesso.
         """
-        errori = self.errori(verso)
+        errori = self.errori(verso, solo)
         if errori:
             raise VerificaFallita(errori)
 
+        scelta = self._scelte(solo)
         rapporto = {"verso": verso, "database": self.database, "colonne": []}
         for tabella, colonna, regola in self.policy.colonne_da_cifrare():
+            if not scelta(tabella, colonna):
+                continue
             tipo, tweak = regola["tipo"], self.policy.tweak(tabella, colonna)
             if progresso:
                 progresso("%s.%s" % (tabella, colonna))
@@ -194,10 +228,10 @@ class Motore:
                 "righe_aggiornate": toccate, "non_trattabili": scarti,
             })
 
-        rapporto["colonne"].extend(self._azzera(verso, progresso))
+        rapporto["colonne"].extend(self._azzera(verso, progresso, scelta))
         return rapporto
 
-    def _azzera(self, verso, progresso=None):
+    def _azzera(self, verso, progresso=None, scelta=None):
         """Svuota le colonne dichiarate `azzera`. Solo in cifratura.
 
         In decifratura non si fa nulla: non c'e' nulla da riportare indietro, e
@@ -209,6 +243,8 @@ class Motore:
 
         fatte = []
         for tabella, colonna, _ in self.policy.colonne_da_azzerare():
+            if scelta and not scelta(tabella, colonna):
+                continue
             if progresso:
                 progresso("%s.%s (azzera)" % (tabella, colonna))
             # Passa dal registro come la cifratura: e' l'unica cosa che sappia

@@ -256,6 +256,57 @@ class Azzeramento(Base):
         self.assertEqual(_valori(self.engine, "clienti", "codice_fiscale"), CF)
 
 
+class ColonnaSingola(Base):
+    """`solo=` — si lavora una colonna alla volta, come fa il menu guidato."""
+
+    UNA = [("clienti", "codice_fiscale")]
+
+    def test_tocca_solo_quella_indicata(self):
+        prima = _valori(self.engine, "contratti", "cf_intestatario")
+        r = self.m.esegui("cifra", solo=self.UNA)
+        self.assertEqual([c["colonna"] for c in r["colonne"]], ["codice_fiscale"])
+        self.assertEqual(_valori(self.engine, "contratti", "cf_intestatario"), prima)
+        self.assertNotEqual(_valori(self.engine, "clienti", "codice_fiscale"), CF)
+
+    def test_il_registro_segna_solo_quella(self):
+        self.m.esegui("cifra", solo=self.UNA)
+        self.assertEqual(self.reg.stato("ProvaDB", "clienti", "codice_fiscale"),
+                         CIFRATA)
+        self.assertEqual(self.reg.stato("ProvaDB", "contratti", "cf_intestatario"),
+                         IN_CHIARO)
+
+    def test_una_colonna_gia_cifrata_non_blocca_la_successiva(self):
+        """Il controllo di stato e' per colonna: e' cio' che rende utile il passo
+        a passo. Se bastasse una colonna gia' fatta a fermare tutto, la seconda
+        non partirebbe mai."""
+        self.m.esegui("cifra", solo=self.UNA)
+        self.m.esegui("cifra", solo=[("contratti", "cf_intestatario")])
+        # e il JOIN regge lo stesso, perche' il tweak e' dichiarato uguale
+        with self.engine.connect() as c:
+            n = c.execute(text(
+                "SELECT COUNT(*) FROM contratti k "
+                "JOIN clienti c ON c.codice_fiscale = k.cf_intestatario")).scalar_one()
+        self.assertEqual(n, 5)
+
+    def test_il_fail_closed_resta_sull_intera_policy(self):
+        """Si scrive su una colonna, ma il documento deve stare in piedi tutto."""
+        p = _policy()
+        del p.tabelle["clienti"]["citta"]
+        m = Motore(self.engine, p, CHIAVE, KID, self.reg, "ProvaDB")
+        with self.assertRaises(VerificaFallita):
+            m.esegui("cifra", solo=self.UNA)
+        self.assertEqual(_valori(self.engine, "clienti", "codice_fiscale"), CF)
+
+    def test_si_torna_indietro_una_colonna_alla_volta(self):
+        self.m.esegui("cifra", solo=self.UNA)
+        self.m.esegui("decifra", solo=self.UNA)
+        self.assertEqual(_valori(self.engine, "clienti", "codice_fiscale"), CF)
+
+    def test_anteprima_ristretta(self):
+        voci = self.m.anteprima(solo=self.UNA)
+        self.assertEqual([v["colonna"] for v in voci], ["codice_fiscale"])
+
+
 class Anteprima(Base):
     def test_non_scrive_nulla(self):
         prima = _valori(self.engine, "clienti", "codice_fiscale")

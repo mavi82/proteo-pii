@@ -329,7 +329,143 @@ def _azione_anteprima(config, nome, engine, verso="cifra"):
     stampa.anteprima(m.anteprima(verso=verso))
 
 
+def _stato_colonna(m, tabella, colonna):
+    regola = m.policy.regola(tabella, colonna) or {}
+    strategia = regola.get("strategia") or "—"
+    if strategia == "cifra":
+        strategia = "cifra %s" % regola.get("tipo")
+    return "%-14s registro: %s" % (strategia,
+                                   m.registro.stato(m.database, tabella, colonna))
+
+
+def _scegli_colonna(m, engine, tabella):
+    """Elenco delle colonne con quello che serve per decidere: regola e stato."""
+    schema = db.introspeziona(engine, [tabella])
+    colonne = sorted(schema["tabelle"].get(tabella, {}))
+    if not colonne:
+        print("\n%s non ha colonne leggibili." % tabella)
+        return None
+    voci = [(c, "%-30s %s" % (c, _stato_colonna(m, tabella, c))) for c in colonne]
+    voci.append((None, "torna indietro"))
+    return _scegli("Quale colonna di %s?" % tabella, voci)
+
+
+def _decidi_strategia(m, engine, tabella, colonna):
+    """Chiede cosa fare della colonna, dopo aver guardato cosa contiene.
+
+    Il campione viene mostrato prima della domanda: decidere la strategia di una
+    colonna senza vederne i valori e' esattamente il modo in cui si cifra la
+    colonna sbagliata.
+    """
+    valori = db.campiona(engine, tabella, colonna, 200)
+    tipo, quanti, esaminati = rilevamento.analizza(valori)
+
+    print("\n%s.%s — %d valori guardati" % (tabella, colonna, esaminati))
+    for v in valori[:5]:
+        print("    %s" % v)
+    if tipo:
+        print("\n  riconosciuto: %s (%d valori su %d passano il checksum)"
+              % (tipo, quanti, esaminati))
+    else:
+        print("\n  nessun tipo riconosciuto: i valori non passano i checksum di "
+              "CF, partita IVA o IBAN.")
+
+    # Il tipo riconosciuto sta in cima, ma le altre scelte restano tutte a
+    # video: una proposta che nasconde le alternative non e' una proposta.
+    scelte = [("cifra:%s" % t, "cifra come %s%s"
+               % (t, "   <- riconosciuto" if t == tipo else ""))
+              for t in ([tipo] if tipo else []) + [x for x, _ in rilevamento.TIPI
+                                                   if x != tipo]]
+    scelte += [("mantieni", "lascia in chiaro (mantieni)"),
+               ("azzera", "SVUOTA la colonna (azzera) — non torna indietro"),
+               (None, "torna indietro")]
+    return _scegli("Cosa faccio di %s.%s?" % (tabella, colonna), scelte)
+
+
+def _applica_strategia(config, nome, m, tabella, colonna, scelta):
+    """Scrive la scelta nella policy. Ritorna la regola, o None se annullata."""
+    if scelta is None:
+        return None
+    if scelta.startswith("cifra:"):
+        regola = {"strategia": "cifra", "tipo": scelta.split(":", 1)[1]}
+    else:
+        regola = {"strategia": scelta}
+
+    m.policy.tabelle.setdefault(tabella, {})[colonna] = regola
+    destinazione = config.risolvi(config.voce(nome), "policy")
+    m.policy.salva(destinazione)
+    print("\npolicy aggiornata: %s.%s -> %s" % (tabella, colonna, regola["strategia"]))
+    return regola
+
+
+def _cifra_una_colonna(config, nome, engine, verso):
+    """Una colonna alla volta: si sceglie, si decide, si guarda, si scrive."""
+    m = _motore(config, nome, engine)
+    if m is None:
+        return
+
+    tabelle = sorted(set(db.elenco_tabelle(engine)) | set(m.policy.tabelle))
+    voci = [(t, t) for t in tabelle] + [(None, "torna indietro")]
+    tabella = _scegli("Su quale tabella?", voci)
+    if tabella is None:
+        return
+
+    colonna = _scegli_colonna(m, engine, tabella)
+    if colonna is None:
+        return
+
+    regola = m.policy.regola(tabella, colonna)
+    if not regola:
+        print("\n%s.%s non e' dichiarata nella policy." % (tabella, colonna))
+        regola = _applica_strategia(config, nome, m, tabella, colonna,
+                                    _decidi_strategia(m, engine, tabella, colonna))
+        if regola is None:
+            return
+    elif _conferma("\n%s.%s e' dichiarata '%s'. Vuoi cambiarla?"
+                   % (tabella, colonna, regola.get("strategia"))):
+        nuova = _applica_strategia(config, nome, m, tabella, colonna,
+                                   _decidi_strategia(m, engine, tabella, colonna))
+        regola = nuova or regola
+
+    if regola.get("strategia") == "mantieni":
+        print("\n'mantieni': non c'e' niente da scrivere su questa colonna.")
+        return
+
+    # Il fail-closed vale comunque sull'intera policy: si scrive su una colonna,
+    # ma non si parte se il documento nel suo insieme non sta in piedi.
+    solo = [(tabella, colonna)]
+    print("\ncontrollo prima di scrivere...")
+    if stampa.problemi(m.verifica(verso, solo)):
+        print("\nci sono errori bloccanti: nulla e' stato scritto.")
+        return
+
+    stampa.anteprima(m.anteprima(verso=verso, solo=solo))
+    if not _conferma("\nprocedere su %s.%s? il database verra' modificato"
+                     % (tabella, colonna)):
+        print("annullato: nulla e' stato scritto.")
+        return
+
+    try:
+        r = m.esegui(verso, progresso=lambda d: print("  %s..." % d, flush=True),
+                     solo=solo)
+    except (VerificaFallita, ValoreNonTrattabile) as e:
+        print("\nfermato prima di finire: %s" % e)
+        return
+    print("\nfatto.")
+    stampa.rapporto(r)
+
+
 def _azione_scrittura(config, nome, engine, verso):
+    scelta = _scegli("Come vuoi procedere?", [
+        ("una",   "una colonna alla volta (guidato)"),
+        ("tutto", "tutto quello che la policy dichiara"),
+        (None,    "torna al menu"),
+    ])
+    if scelta is None:
+        return
+    if scelta == "una":
+        return _cifra_una_colonna(config, nome, engine, verso)
+
     m = _motore(config, nome, engine)
     if m is None:
         return
@@ -438,24 +574,49 @@ def _azione_policy(config, nome, engine):
         tabelle = _scegli_tabelle(engine)
 
     schema = db.introspeziona(engine, sorted(tabelle))
-    nuove = [c for t in schema["tabelle"]
+    nuove = [(t, c) for t in schema["tabelle"]
              for c in schema["tabelle"][t] if not policy.regola(t, c)]
+
+    # Una policy gia' completa non ha colonne nuove, quindi non ci sarebbe nulla
+    # da riconoscere: ma e' proprio il caso in cui serve, perche' tutte le
+    # colonne sono nate 'mantieni' e nessuno le ha ancora guardate.
+    rivedi = False
     if not nuove:
         print("\nnessuna colonna nuova: la policy e' gia' allineata allo schema.")
-        return
+        rivedi = _conferma("vuoi che guardi i valori delle colonne dichiarate "
+                           "'mantieni' e proponga cosa cifrare?")
+        if not rivedi:
+            return
+    elif esistente:
+        rivedi = _conferma("\noltre alle %d colonne nuove, vuoi che riguardi "
+                           "anche quelle gia' dichiarate 'mantieni'?" % len(nuove))
 
-    print("\n%d colonne da decidere. Campiono i valori per riconoscerle..."
-          % len(nuove))
+    def da_decidere(tabella, colonna):
+        regola = policy.regola(tabella, colonna)
+        return regola is None or (rivedi and regola.get("strategia") == "mantieni")
+
+    quante = sum(1 for t, colonne in schema["tabelle"].items()
+                 for c in colonne if da_decidere(t, c))
+    print("\n%d colonne da esaminare. Campiono i valori per riconoscerle..." % quante)
     proposte = rilevamento.proponi(
         lambda t, c: db.campiona(engine, t, c),
-        {"tabelle": {t: {c: d for c, d in colonne.items()
-                         if not policy.regola(t, c)}
+        {"tabelle": {t: {c: d for c, d in colonne.items() if da_decidere(t, c)}
                      for t, colonne in schema["tabelle"].items()}})
 
     accettate = _conferma_proposte(proposte) if proposte else {}
     if not proposte:
         print("\nnessuna colonna riconosciuta: nessun valore passa i checksum di "
               "CF, partita IVA o IBAN.")
+
+    # Le accettate si scrivono qui e non in `aggiorna`, che per disegno non
+    # tocca le colonne gia' dichiarate: qui invece la decisione e' appena stata
+    # presa a video, e deve valere anche su una 'mantieni' preesistente.
+    cambiate = []
+    for tabella, colonne in accettate.items():
+        for colonna, (tipo, _, _) in colonne.items():
+            if policy.regola(tabella, colonna):
+                policy.tabelle[tabella][colonna] = {"strategia": "cifra", "tipo": tipo}
+                cambiate.append("%s.%s" % (tabella, colonna))
 
     aggiunte, tolte, fuori = policy.aggiorna(schema, accettate)
     policy.salva(destinazione)
@@ -465,6 +626,10 @@ def _azione_policy(config, nome, engine):
     print("  %d colonne aggiunte, di cui %d da cifrare:" % (len(aggiunte), len(cifrate)))
     for d in cifrate:
         print("    %s" % d)
+    if cambiate:
+        print("  %d colonne passate da 'mantieni' a 'cifra':" % len(cambiate))
+        for d in sorted(cambiate):
+            print("    %s" % d)
     if tolte:
         # Una colonna rinominata si presenta cosi': una tolta e una aggiunta come
         # 'mantieni'. Non si puo' distinguere dallo schema, ma si puo' dire.

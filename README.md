@@ -208,7 +208,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**122 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**128 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -313,6 +313,43 @@ autofirmato, host che non si risolve, porta chiusa, firewall. Quando nessuna
 regola scatta non si inventa niente — un suggerimento sbagliato si prova, e fa
 perdere più tempo dell'errore che pretendeva di spiegare.
 
+### Una colonna alla volta
+
+`CIFRA` chiede prima come procedere: tutto ciò che la policy dichiara, oppure
+**una colonna alla volta**. Il passo a passo sceglie la tabella, poi la colonna
+— con accanto la strategia dichiarata e cosa risulta al registro — e se quella
+colonna non ha ancora una decisione, la chiede dopo aver mostrato cosa contiene:
+
+```
+Quale colonna di clienti?
+  1) citta                    mantieni       registro: in_chiaro
+  2) codice_fiscale           cifra CF       registro: cifrata
+  3) piva                     mantieni       registro: in_chiaro
+
+clienti.piva — 4 valori guardati
+    00743110157
+    17497033260
+
+  riconosciuto: PIVA (4 valori su 4 passano il checksum)
+
+Cosa faccio di clienti.piva?
+  1) cifra come PIVA   <- riconosciuto
+  2) cifra come CF
+  3) cifra come IBAN
+  4) lascia in chiaro (mantieni)
+  5) SVUOTA la colonna (azzera) — non torna indietro
+```
+
+La scelta viene scritta nella policy, quindi il passo a passo **costruisce** il
+documento invece di aggirarlo. Due proprietà restano intatte:
+
+- **il fail-closed vale sull'intera policy**, non solo sulla colonna scelta: si
+  scrive su una colonna, ma non si parte se il documento nel suo insieme non sta
+  in piedi. Una colonna dimenticata resta dimenticata anche mentre se ne tratta
+  un'altra;
+- **il controllo di stato è per colonna**: una colonna già cifrata la settimana
+  scorsa non impedisce di trattare quella accanto, ma rifarla è bloccato.
+
 ### Scrivere la policy senza scriverla
 
 Il fail-closed pretende una riga per ogni colonna. Su dieci colonne è un
@@ -348,6 +385,15 @@ La stessa cosa da riga di comando:
 
 ```bash
 bin/proteo bozza-policy --rileva
+```
+
+Su una policy già completa non c'è nulla di "nuovo" da esaminare, ma è proprio
+il caso in cui serve — tutte le colonne sono nate `mantieni` e nessuno le ha
+ancora guardate. Per quello c'è `--rivedi`, che riesamina anche le colonne già
+dichiarate `mantieni`:
+
+```bash
+bin/proteo bozza-policy --rileva --rivedi
 ```
 
 Rilanciarlo dopo una migration aggiunge solo le colonne comparse nel frattempo,

@@ -251,15 +251,29 @@ def cmd_bozza_policy(args):
         tabelle = args.tabelle or db.elenco_tabelle(engine, args.schema)
 
     schema = db.introspeziona(engine, sorted(tabelle))
-    proposte = {}
+    proposte, cambiate = {}, []
     if args.rileva:
-        # solo le colonne ancora da decidere: campionare quelle gia' scelte
-        # costerebbe letture inutili e non cambierebbe niente
-        da_decidere = {"tabelle": {t: {c: d for c, d in colonne.items()
-                                       if not policy.regola(t, c)}
-                                   for t, colonne in schema["tabelle"].items()}}
+        # Di norma solo le colonne ancora da decidere: campionare quelle gia'
+        # scelte costerebbe letture inutili. Ma una policy generata tutta
+        # 'mantieni' non ha colonne "nuove" pur non essendo stata guardata da
+        # nessuno: --rivedi e' per quel caso.
+        def da_decidere(tabella, colonna):
+            regola = policy.regola(tabella, colonna)
+            return regola is None or (args.rivedi
+                                      and regola.get("strategia") == "mantieni")
+
         proposte = rilevamento.proponi(
-            lambda t, c: db.campiona(engine, t, c, args.campione), da_decidere)
+            lambda t, c: db.campiona(engine, t, c, args.campione),
+            {"tabelle": {t: {c: d for c, d in colonne.items()
+                             if da_decidere(t, c)}
+                         for t, colonne in schema["tabelle"].items()}})
+
+        for tabella, colonne in proposte.items():
+            for colonna, (tipo, _, _) in colonne.items():
+                if policy.regola(tabella, colonna):
+                    policy.tabelle[tabella][colonna] = {"strategia": "cifra",
+                                                        "tipo": tipo}
+                    cambiate.append("%s.%s" % (tabella, colonna))
 
     aggiunte, tolte, fuori = policy.aggiorna(schema, proposte)
     policy.salva(destinazione)
@@ -267,6 +281,8 @@ def cmd_bozza_policy(args):
     cifrate = [d for d, s in aggiunte if s == "cifra"]
     print("%s: %d colonne aggiunte, di cui %d da cifrare"
           % (destinazione, len(aggiunte), len(cifrate)))
+    if cambiate:
+        print("%d colonne passate da 'mantieni' a 'cifra'" % len(cambiate))
     for tabella in sorted(proposte):
         for colonna, (tipo, quanti, esaminati) in sorted(proposte[tabella].items()):
             print("  %-45s %-5s %d/%d" % ("%s.%s" % (tabella, colonna),
@@ -401,6 +417,9 @@ def _parser():
     s.add_argument("--rileva", action="store_true",
                    help="riconosce CF/PIVA/IBAN campionando i valori e propone "
                         "'cifra' sulle colonne nuove")
+    s.add_argument("--rivedi", action="store_true",
+                   help="con --rileva, riguarda anche le colonne gia' "
+                        "dichiarate 'mantieni'")
     s.add_argument("--campione", type=int, default=200,
                    help="quanti valori guardare per colonna (default: 200)")
     s.set_defaults(func=cmd_bozza_policy)
