@@ -31,7 +31,7 @@ from . import db, diagnosi, keyfile, rilevamento, repo, stampa
 from .stampa import NO, SI
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
-from .registro import CIFRATA, IN_CHIARO, Registro
+from .registro import AZZERATA, CIFRATA, IN_CHIARO, Registro
 from .surrogati import ValoreNonTrattabile
 
 __all__ = ["avvia"]
@@ -363,6 +363,65 @@ def _azione_pulisci(config, nome, engine):
     for tabella in orfane:
         db.elimina_mappa(engine, tabella)
         print("  eliminata %s" % tabella)
+
+
+def _azione_registro(config, nome, engine):
+    """Le due cose che si fanno al registro a mano, e nessun'altra."""
+    scelta = _scegli("Cosa devi sistemare?", [
+        ("risolvi", "una colonna rimasta 'in_corso'"),
+        ("ripristino", "ho ripristinato il database da un backup"),
+        (None, "torna al menu"),
+    ])
+    if scelta == "risolvi":
+        return _azione_risolvi(config, nome, engine)
+    if scelta == "ripristino":
+        return _azione_ripristino(config, nome, engine)
+
+
+def _azione_ripristino(config, nome, engine):
+    """Riallinea il registro dopo un ripristino del database.
+
+    Il registro sta sul client e il ripristino non lo tocca: dopo un restore il
+    registro continua a dire 'cifrata' su colonne che nel database sono tornate
+    in chiaro. Non e' un dettaglio contabile — con quel disallineamento
+    `decifra` decifrerebbe dei valori veri, producendo altri valori
+    formalmente validi e completamente sbagliati, senza che nulla lo segnali.
+    """
+    voce = config.voce(nome)
+    registro = Registro(config.risolvi(voce, "registro"))
+    etichetta = voce.get("etichetta") or nome
+    trattate = [v for v in registro.elenco(etichetta)
+                if v.get("stato") in (CIFRATA, AZZERATA)]
+    if not trattate:
+        print("\nil registro non dichiara nessuna colonna trattata: "
+              "non c'e' niente da riallineare.")
+        return
+
+    print("\nIl registro dice che queste colonne sono state trattate:")
+    for v in trattate:
+        print("  %-9s %s.%s  del %s"
+              % (v["stato"], v["tabella"], v["colonna"], v.get("aggiornato")))
+
+    print("\nLa domanda e' una sola, e la risposta la sai solo tu:")
+    if not _conferma("il backup che hai ripristinato e' ANTERIORE a questi "
+                     "trattamenti?"):
+        print("\nAllora i dati ripristinati sono gia' trattati e il registro ha "
+              "ragione:\nnon tocco niente. Per riportarli in chiaro serve "
+              "'decifra' con la stessa chiave.")
+        return
+
+    print("\nQuindi nel database quei valori sono tornati quelli veri, e il "
+          "registro va\nriportato a 'in chiaro'. Le colonne 'azzerata' "
+          "ritornano con i loro dati.")
+    if not _conferma("segnare tutte queste colonne come 'in chiaro'?"):
+        print("annullato.")
+        return
+    for v in trattate:
+        registro.concludi(etichetta, v["tabella"], v["colonna"], IN_CHIARO, None)
+        print("  %s.%s -> in_chiaro" % (v["tabella"], v["colonna"]))
+    print("\nLa chiave resta quella di prima: non va rigenerata. I surrogati "
+          "non sono\nsalvati da nessuna parte — si ricalcolano dalla chiave "
+          "quando servono.")
 
 
 def _azione_risolvi(config, nome, engine):
@@ -846,7 +905,7 @@ VOCI = [
     ("decifra",     "DECIFRA — riporta in chiaro, scrive sul database"),
     ("policy",      "policy: creala o aggiornala (riconosce le colonne)"),
     ("chiave",      "genera la chiave"),
-    ("risolvi",     "risolvi una colonna rimasta 'in_corso'"),
+    ("registro",    "registro: colonna 'in_corso', o database ripristinato"),
     ("pulisci",     "elimina le tabelle di appoggio rimaste indietro"),
     ("connessione", "connessione: provala o rifalla"),
     ("cambia",      "cambia database"),
@@ -900,7 +959,7 @@ def avvia(percorso_config=None):
             # `stato` e `risolvi` leggono solo il registro, che sta sul client:
             # devono funzionare anche con il database irraggiungibile, che e'
             # spesso il motivo per cui si e' rimasti a meta'.
-            if scelta not in ("stato", "risolvi") \
+            if scelta not in ("stato", "registro") \
                     and (engine is None or aperto_per != nome):
                 try:
                     engine = db.crea_engine(_password_mancante(config, voce))
@@ -926,7 +985,7 @@ def avvia(percorso_config=None):
                 "anteprima": _azione_anteprima,
                 "policy": _azione_policy,
                 "chiave": _azione_chiave,
-                "risolvi": _azione_risolvi,
+                "registro": _azione_registro,
                 "pulisci": _azione_pulisci,
                 "cifra": lambda c, n, e: _azione_scrittura(c, n, e, "cifra"),
                 "decifra": lambda c, n, e: _azione_scrittura(c, n, e, "decifra"),

@@ -15,6 +15,7 @@ uno script, e seguono l'ordine in cui vanno usati:
     prova         prova solo la connessione
     stato         cosa risulta al registro
     risolvi       chiude a mano una colonna rimasta 'in_corso'
+    ripristino    riallinea il registro dopo un ripristino del database
     pulisci       elimina le tabelle di appoggio rimaste indietro
     verifica      i cancelli fail-closed, senza toccare nulla
     anteprima     prima/dopo su un campione, senza toccare nulla
@@ -55,7 +56,7 @@ from . import db, diagnosi, keyfile, rilevamento, stampa
 from .stampa import SI
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
-from .registro import CIFRATA, IN_CHIARO, Registro
+from .registro import AZZERATA, CIFRATA, IN_CHIARO, Registro
 
 __all__ = ["main"]
 
@@ -391,6 +392,44 @@ def cmd_risolvi(args):
           % (args.tabella, args.colonna, args.stato))
 
 
+def cmd_ripristino(args):
+    """Riallinea il registro dopo un ripristino del database da un backup.
+
+    Il registro sta sul client e il restore non lo tocca: resta a dire
+    'cifrata' su colonne tornate in chiaro. Con quel disallineamento `decifra`
+    decifrerebbe valori veri, producendone altri formalmente validi e
+    completamente sbagliati, in silenzio.
+    """
+    config, voce = _config(args)
+    registro = Registro(_percorso(args, config, voce, "registro") or "registro")
+    database = args.database or voce.get("etichetta") or "database"
+    trattate = [v for v in registro.elenco(database)
+                if v.get("stato") in (CIFRATA, AZZERATA)]
+    if not trattate:
+        print("il registro di %s non dichiara nessuna colonna trattata." % database)
+        return
+
+    print("il registro dice che queste colonne sono state trattate:")
+    for v in trattate:
+        print("  %-9s %s.%s  del %s"
+              % (v["stato"], v["tabella"], v["colonna"], v.get("aggiornato")))
+    print("\nSe il backup ripristinato e' ANTERIORE a questi trattamenti, nel "
+          "database quei\nvalori sono tornati quelli veri e il registro va "
+          "riportato a 'in chiaro'.\nSe e' POSTERIORE, i dati sono gia' "
+          "trattati e il registro ha ragione: non\ntoccare niente, e usa "
+          "'decifra' con la stessa chiave.")
+
+    if not args.si:
+        risposta = input("\nil backup e' anteriore, e vanno segnate 'in chiaro' "
+                         "[y/n]: ")
+        if risposta.strip().lower() not in SI:
+            print("annullato: il registro resta com'e'.")
+            return
+    for v in trattate:
+        registro.concludi(database, v["tabella"], v["colonna"], IN_CHIARO, None)
+        print("  %s.%s -> in_chiaro" % (v["tabella"], v["colonna"]))
+
+
 def cmd_stato(args):
     config, voce = _config(args)
     engine = _apri(args, config, voce)
@@ -541,6 +580,12 @@ def _parser():
     s.add_argument("--si", "-y", action="store_true",
                    help="salta la conferma interattiva")
     s.set_defaults(func=cmd_risolvi)
+
+    s = comune("ripristino",
+               "riallinea il registro dopo un ripristino del database")
+    s.add_argument("--si", "-y", action="store_true",
+                   help="salta la conferma interattiva")
+    s.set_defaults(func=cmd_ripristino)
 
     s = comune("pulisci", "elimina le tabelle di appoggio rimaste indietro")
     s.add_argument("--schema", help="limita a uno schema")

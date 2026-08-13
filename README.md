@@ -267,7 +267,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**235 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**239 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -405,6 +405,42 @@ Da riga di comando è `--righe N` (default 30, `--righe 0` per non vederla).
 **Con `--si` non viene mostrata a meno di chiederla esplicitamente**: l'uso da
 script finisce quasi sempre in un file di log, e lì quei valori veri
 resterebbero scritti in chiaro.
+
+### Dove sta lo stato, e cosa succede se ripristini il database
+
+Dei surrogati **non viene salvato niente**: sono una funzione della chiave, del
+tweak e del valore, e si ricalcolano quando servono. L'unica cosa che Proteo
+scrive fuori dal database è il registro, che dice *che* una colonna è stata
+trattata, non *come*:
+
+```json
+{
+  "database": "edw", "tabella": "T_Pazienti", "colonna": "Nome",
+  "stato": "cifrata", "tipo": "NOME", "tweak": "nome",
+  "chiave_id": "271462469c…", "lista": "1353bd6f52…",
+  "righe": 7300, "aggiornato": "2026-08-13T08:00:06+00:00",
+  "storico": [ … ]
+}
+```
+
+Nessun valore vero, nessun surrogato, nessuna corrispondenza. La sola cosa che
+somiglia a un dizionario è la tabella di appoggio, che vive dentro la
+transazione e viene sempre eliminata (vedi `pulisci`).
+
+**Quindi sì: ripristinare un backup anteriore alla cifratura annulla tutto.** È
+anzi l'unico modo di tornare indietro se hai perso la chiave. Ma il registro sta
+sul client e il restore non lo tocca: resta a dire `cifrata` su colonne tornate
+in chiaro, e con quel disallineamento `decifra` decifrerebbe dei valori *veri*,
+producendone altri formalmente validi e completamente sbagliati — in silenzio,
+perché un codice fiscale decifrato è un codice fiscale valido. Va riallineato:
+
+```bash
+bin/proteo ripristino
+```
+
+Chiede l'unica cosa che il programma non può sapere — se il backup è anteriore o
+posteriore ai trattamenti — e nel primo caso riporta le colonne a `in chiaro`.
+La chiave resta valida e non va rigenerata.
 
 ### Quando una colonna resta `in_corso`
 

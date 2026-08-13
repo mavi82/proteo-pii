@@ -73,5 +73,35 @@ class ConLotti(unittest.TestCase):
         self.assertEqual(voce["stato"], IN_CORSO)
 
 
+class DopoUnRipristino(unittest.TestCase):
+    """Il registro sta sul client: un restore del database non lo tocca."""
+
+    def setUp(self):
+        self.reg = Registro(Path(tempfile.mkdtemp()) / "r")
+        self.reg.avvia("DB", "t", "cf", "CF", "cf", "k0", "cifra")
+        self.reg.concludi("DB", "t", "cf", CIFRATA, 100)
+
+    def test_il_registro_resta_a_dire_cifrata(self):
+        """E' il disallineamento pericoloso: decifrare valori veri produce
+        altri valori validi e sbagliati, senza che nulla lo segnali."""
+        self.assertEqual(self.reg.stato("DB", "t", "cf"), CIFRATA)
+
+    def test_riallineare_la_riporta_in_chiaro(self):
+        self.reg.concludi("DB", "t", "cf", IN_CHIARO, None)
+        self.assertEqual(self.reg.stato("DB", "t", "cf"), IN_CHIARO)
+        self.reg.verifica_prima_di_cifrare("DB", "t", "cf")     # non alza
+
+    def test_la_chiave_non_si_perde(self):
+        """Serve ancora: i surrogati non sono salvati da nessuna parte, si
+        ricalcolano da chiave e tweak."""
+        self.reg.concludi("DB", "t", "cf", IN_CHIARO, None)
+        self.assertEqual(self.reg.leggi("DB", "t", "cf")["chiave_id"], "k0")
+
+    def test_lo_storico_conserva_il_passaggio(self):
+        self.reg.concludi("DB", "t", "cf", IN_CHIARO, None)
+        stati = [s["stato"] for s in self.reg.leggi("DB", "t", "cf")["storico"]]
+        self.assertEqual(stati, [IN_CORSO, CIFRATA])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
