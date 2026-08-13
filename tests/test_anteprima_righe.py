@@ -34,6 +34,8 @@ def _db():
         for i, cf in enumerate(CF):
             c.execute(text("INSERT INTO clienti VALUES (:i,:cf,:n,'Milano','x')"),
                       {"i": i, "cf": cf, "n": ["Mario", "Anna", "Ludmila"][i]})
+        # una lettera sola: l'unico valore che resta non trattabile
+        c.execute(text("INSERT INTO clienti VALUES (8, NULL, 'X', 'Bari', 'y')"))
         c.execute(text("INSERT INTO clienti VALUES (9, NULL, NULL, 'Roma', NULL)"))
     return e
 
@@ -81,13 +83,19 @@ class Contenuto(unittest.TestCase):
         prima, dopo, _ = self.voci[0]["righe"][0]["celle"]["note"]
         self.assertEqual((prima, dopo), ("x", None))
 
+    def test_un_nome_fuori_lista_viene_comunque_trattato(self):
+        prima, dopo, errore = self.voci[0]["righe"][2]["celle"]["nome"]
+        self.assertEqual(prima, "Ludmila")
+        self.assertNotIn(dopo, (None, "Ludmila"))
+        self.assertIsNone(errore)
+
     def test_un_valore_non_trattabile_e_segnalato_non_nascosto(self):
-        _, dopo, errore = self.voci[0]["righe"][2]["celle"]["nome"]
+        _, dopo, errore = self.voci[0]["righe"][3]["celle"]["nome"]
         self.assertIsNone(dopo)
-        self.assertIn("non e' fra le", errore)
+        self.assertIn("almeno due", errore)
 
     def test_i_nulli_restano_nulli(self):
-        self.assertEqual(self.voci[0]["righe"][3]["celle"]["nome"], (None, None, None))
+        self.assertEqual(self.voci[0]["righe"][4]["celle"]["nome"], (None, None, None))
 
     def test_non_scrive_niente(self):
         with self.engine.connect() as c:
@@ -137,7 +145,7 @@ class Resa(unittest.TestCase):
             self.assertIn("id", testata)
 
     def test_il_motivo_di_uno_scarto_si_legge_per_esteso(self):
-        self.assertIn("aggiungilo alla lista", self.testo)
+        self.assertIn("almeno due", self.testo)
 
     def test_i_valori_lunghi_si_tagliano(self):
         lunga = [{"tabella": "t", "chiave": [], "colonne": ["c"],

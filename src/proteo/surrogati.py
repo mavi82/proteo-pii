@@ -62,6 +62,33 @@ def _fpe_int(ff1, x, dominio, tweak, avanti):
     raise RuntimeError("cycle-walking non converge: dominio %d" % dominio)
 
 
+def _e_una_voce(lista, valore):
+    """Il valore e' una voce della lista, scritta come la lista la scrive?
+
+    Serve la stessa risposta in tre punti — quale percorso prendere in
+    cifratura, quale in decifratura, e da quale insieme il cycle-walking deve
+    uscire — e devono essere la stessa risposta, altrimenti i due percorsi si
+    sovrappongono e un valore torna indietro diverso da com'era.
+
+    La grafia conta, e per due motivi diversi:
+
+      * `De  Luca` con due spazi troverebbe `DE LUCA` in lista, ma rientrerebbe
+        con un solo spazio;
+      * `Rosa maria` rientrerebbe come `Rosa Maria`, perche' la forma di una
+        voce di lista si puo' ricostruire solo se e' tutta maiuscola, tutta
+        minuscola o con le iniziali maiuscole — la lunghezza cambia, quindi non
+        si puo' riportare il maiuscolo carattere per carattere.
+
+    In entrambi i casi il valore vale come fuori lista e passa dal ripiego, che
+    la forma la conserva esattamente. Un surrogato plausibile in meno, un valore
+    che torna indietro diverso da com'era in meno.
+    """
+    from .liste import normalizza
+    canonica = valore in (valore.upper(), valore.lower(), valore.title())
+    return canonica and normalizza(valore) == valore.upper() and \
+        lista.posizione(valore) is not None
+
+
 def _stessa_forma(originale, surrogato):
     """Riporta sul surrogato lo stile di scrittura dell'originale.
 
@@ -200,28 +227,70 @@ class Surrogatore:
         if not v:
             raise ValoreNonTrattabile("valore vuoto")
 
-        # Il ritorno restituira' la voce di lista: se il valore differisce da
-        # essa per qualcosa che non siano le maiuscole (spazi doppi, per
-        # esempio), il giro non sarebbe esatto. Meglio fermarsi.
-        from .liste import normalizza
-        if normalizza(v) != v.upper():
-            raise ValoreNonTrattabile(
-                "%r non tornerebbe indietro identico (spazi o forma non "
-                "standard): normalizza il valore nella colonna" % v)
+        if _e_una_voce(lista, v):
+            posizione = lista.posizione(v)
+            nuova = _fpe_int(self.ff1, posizione, len(lista),
+                             tweak + b"|" + quale.encode(), avanti)
+            return _stessa_forma(v, lista.voce(nuova))
+        return self._fuori_lista(lista, v, tweak + b"|" + quale.encode(), avanti)
 
-        posizione = lista.posizione(v)
-        if posizione is None:
-            # Nessun ripiego: cifrarlo in un altro modo darebbe un valore che in
-            # decifratura verrebbe cercato nella lista e non trovato, cioe' un
-            # dato perso in silenzio.
-            raise ValoreNonTrattabile(
-                "%r non e' fra le %d voci di %s: aggiungilo alla lista PRIMA di "
-                "cifrare, oppure lascia che la policy lo salti"
-                % (v, len(lista), lista.nome))
+    def _fuori_lista(self, lista, valore, tweak, avanti):
+        """Chi non e' in lista si cifra lettera per lettera, non si rifiuta.
 
-        nuova = _fpe_int(self.ff1, posizione, len(lista),
-                         tweak + b"|" + quale.encode(), avanti)
-        return _stessa_forma(v, lista.voce(nuova))
+        Una lista non potra' mai contenere tutti i nomi veri di un database:
+        nomi stranieri, doppi nomi, `Nome-paz2` messo li' da un collaudo. Prima
+        ci si fermava, e su una colonna vera significava fermarsi su decine di
+        valori — cioe' non trattarla affatto.
+
+        Il ripiego conserva la forma (lunghezza, spazi, trattini, maiuscole) e
+        cifra solo le lettere: il risultato non e' un nome plausibile, ma e'
+        reversibile, deterministico e biiettivo come tutto il resto.
+
+        **Il cycle-walking non e' un dettaglio.** Il risultato viene ricifrato
+        finche' non cade fuori dalla lista: se un valore fuori lista producesse
+        per caso un nome di lista, in decifratura verrebbe preso per l'altro
+        percorso e restituirebbe un valore diverso dall'originale, in silenzio.
+        Escludere la lista da entrambi i lati rende i due percorsi disgiunti, e
+        l'operazione simmetrica: la decifratura cammina allo stesso modo.
+        """
+        for _ in range(1000):
+            valore = self._mescola(valore, tweak, avanti)
+            if not _e_una_voce(lista, valore):
+                return valore
+        raise RuntimeError("cycle-walking non converge fuori dalla lista")
+
+    def _mescola(self, valore, tweak, avanti):
+        """Cifra lettere e cifre al loro posto, lasciando il resto dov'e'.
+
+        Per classi, come nell'IBAN: le lettere restano lettere e le cifre cifre,
+        cosi' `Maria Matias` resta due parole della stessa lunghezza. Gli spazi,
+        i trattini e le lettere accentate restano dove sono — sono struttura, e
+        cambiarli renderebbe il valore irriconoscibile come nome senza aggiungere
+        nulla alla protezione.
+        """
+        fuori = list(valore)
+        for classe, alfabeto in ((_LETTERE, _LETTERE), (_CIFRE, _CIFRE)):
+            pos = [i for i, ch in enumerate(valore) if ch.upper() in classe]
+            # Un solo carattere ha dominio 26 o 10: sotto il minimo di FF1.
+            # Resta com'e', come il CIN dell'IBAN.
+            if len(pos) < 2:
+                continue
+            s = "".join(valore[i].upper() for i in pos)
+            etichetta = tweak + b"|fuori|" + alfabeto[:1].encode()
+            s2 = (self.ff1.encrypt_str(s, alfabeto, etichetta) if avanti
+                  else self.ff1.decrypt_str(s, alfabeto, etichetta))
+            for i, ch in zip(pos, s2):
+                fuori[i] = ch if valore[i].isupper() else ch.lower()
+
+        nuovo = "".join(fuori)
+        if nuovo == valore:
+            # Nessun gruppo abbastanza lungo da cifrare: il valore uscirebbe
+            # identico, cioe' in chiaro, ed e' l'unico esito che non si puo'
+            # accettare in silenzio.
+            raise ValoreNonTrattabile(
+                "%r non ha abbastanza lettere da cifrare (ne servono almeno due)"
+                % valore)
+        return nuovo
 
     def nome(self, valore, tweak, avanti=True):
         return self._da_lista("nomi", valore, tweak, avanti)

@@ -85,21 +85,67 @@ class Forma(unittest.TestCase):
                             self.s.cifra("NOME", "Nicolo", TW))
 
 
-class Rifiuti(unittest.TestCase):
-    """Nessun ripiego silenzioso: cio' che non torna indietro si ferma."""
+class FuoriLista(unittest.TestCase):
+    """Chi non e' in lista si cifra lo stesso, conservando la forma."""
 
     def setUp(self):
         self.s = Surrogatore(CHIAVE)
 
-    def test_fuori_lista(self):
-        with self.assertRaises(ValoreNonTrattabile) as e:
-            self.s.cifra("NOME", "Ludmila", TW)
-        self.assertIn("aggiungilo alla lista", str(e.exception))
+    def _fuori(self, quale, valore):
+        surrogato = self.s.cifra(quale, valore, TW)
+        self.assertEqual(self.s.decifra(quale, surrogato, TW), valore)
+        return surrogato
 
-    def test_spazi_doppi(self):
-        """Rientrerebbe con un solo spazio, cioe' diverso dall'originale."""
-        with self.assertRaises(ValoreNonTrattabile):
-            self.s.cifra("COGNOME", "De  Luca", TW)
+    def test_un_nome_straniero_non_si_ferma_piu(self):
+        self.assertNotEqual(self._fuori("NOME", "Ludmila"), "Ludmila")
+
+    def test_il_surrogato_non_e_mai_una_voce_di_lista(self):
+        """Altrimenti in decifratura verrebbe preso per l'altro percorso e
+        restituirebbe un valore diverso dall'originale, in silenzio."""
+        for valore in ("Ludmila", "Bartoli", "Xyz", "Kevin", "Ahmed"):
+            surrogato = self._fuori("NOME", valore)
+            self.assertIsNone(liste.carica("nomi").posizione(surrogato))
+
+    def test_conserva_spazi_e_trattini(self):
+        surrogato = self._fuori("NOME", "Maria Matias")
+        self.assertEqual([len(p) for p in surrogato.split(" ")], [5, 6])
+        self.assertEqual(self._fuori("NOME", "Nome-paz2").count("-"), 1)
+
+    def test_le_cifre_restano_cifre(self):
+        surrogato = self._fuori("NOME", "Paz-12")
+        self.assertTrue(surrogato[-2:].isdigit())
+
+    def test_conserva_il_maiuscolo_carattere_per_carattere(self):
+        surrogato = self._fuori("NOME", "McDonald")
+        self.assertEqual([c.isupper() for c in surrogato],
+                         [True, False, True, False, False, False, False, False])
+
+    def test_spazi_doppi_passano_dal_ripiego(self):
+        """Dalla lista rientrerebbero con un solo spazio."""
+        self.assertIn("  ", self._fuori("COGNOME", "De  Luca"))
+
+    def test_forma_mista_passa_dal_ripiego(self):
+        """`Rosa maria` da una voce di lista rientrerebbe `Rosa Maria`."""
+        surrogato = self._fuori("NOME", "Rosa maria")
+        self.assertIsNone(liste.carica("nomi").posizione(surrogato))
+
+    def test_biiettivo_anche_fuori_lista(self):
+        fuori = ["Nome-paz%d" % i for i in range(50)]
+        self.assertEqual(len({self.s.cifra("NOME", v, TW) for v in fuori}), 50)
+
+
+class Rifiuti(unittest.TestCase):
+    """Resta un solo caso che non si puo' trattare."""
+
+    def setUp(self):
+        self.s = Surrogatore(CHIAVE)
+
+    def test_troppo_corto_per_essere_cifrato(self):
+        """Una lettera sola ha dominio 26: sotto il minimo di FF1, e uscirebbe
+        identica — cioe' in chiaro."""
+        with self.assertRaises(ValoreNonTrattabile) as e:
+            self.s.cifra("NOME", "A", TW)
+        self.assertIn("almeno due", str(e.exception))
 
     def test_vuoto(self):
         with self.assertRaises(ValoreNonTrattabile):

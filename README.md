@@ -72,16 +72,43 @@ di far fallire l'`UPDATE` a metà tabella.
 
 Non è il dizionario che il progetto rifiuta. Quello è la mappa `valore →
 surrogato`, che cresce quanto i dati e va custodita come i dati; questa è una
-lista di 250 nomi comuni, uguale per tutti, versionata col codice e pubblica:
+lista di 400 nomi comuni, uguale per tutti, versionata col codice e pubblica:
 non contiene niente del database. La corrispondenza fra un nome e il suo
 surrogato non è scritta da nessuna parte — la determina la chiave.
 
-Il prezzo è dichiarato: **chi non è in lista non è trattabile**, e si ferma
-invece di produrre un valore che non tornerebbe indietro. La lista si allarga,
-ma solo *prima* di cifrare: aggiungere una voce sposta le posizioni di tutte
-quelle che seguono e cambia i surrogati già prodotti. Per questo di ogni lista
-si registra un'impronta accanto alla colonna, e chi prova a decifrare con una
-lista diversa viene fermato prima di scrivere.
+Una lista però non conterrà mai tutti i nomi veri di un database: nomi
+stranieri, doppi nomi, `Nome-paz2` lasciato lì da un collaudo. **Chi non è in
+lista non si ferma: si cifra lettera per lettera**, conservando la forma.
+
+```
+Erika        → Luigi        (lista)     Bartoli      → Eaumvrm       (ripiego)
+MASCIA       → COSIMO       (lista)     Maria Matias → Zqqpb Ypwogg  (ripiego)
+Pierpaolo    → Giacomo      (lista)     Nome-paz2    → Falm-xys2     (ripiego)
+```
+
+Il ripiego non produce un nome plausibile, ma è reversibile, deterministico e
+biiettivo come tutto il resto — e mantiene spazi, trattini, cifre e maiuscole
+al loro posto. Il surrogato del ripiego **non può mai essere una voce della
+lista**: se lo fosse, in decifratura verrebbe preso per l'altro percorso e
+restituirebbe un valore diverso dall'originale, in silenzio. Viene quindi
+ricifrato finché non cade fuori dalla lista (*cycle-walking*), e la decifratura
+cammina allo stesso modo.
+
+Passano dal ripiego anche i valori che **da una voce di lista non
+rientrerebbero identici**: `De  Luca` con due spazi (rientrerebbe con uno solo)
+e `Rosa maria` (rientrerebbe `Rosa Maria` — da una voce di lista si può
+ricostruire solo tutto maiuscolo, tutto minuscolo o le iniziali maiuscole,
+perché la lunghezza cambia). Un surrogato plausibile in meno, un valore
+restituito diverso da com'era in meno.
+
+Resta un solo caso non trattabile: un valore con meno di due lettere, che avrebbe
+un dominio sotto il minimo di FF1 e uscirebbe identico, cioè in chiaro.
+
+> ⚠️ Allargare la lista è gratis **prima** della prima cifratura, non dopo:
+> aggiungere una voce sposta le posizioni di tutte quelle che seguono e cambia i
+> surrogati già prodotti. Di ogni lista si registra un'impronta accanto alla
+> colonna, e chi prova a decifrare con una lista diversa viene fermato prima di
+> scrivere. La lista va conservata **insieme alla chiave**.
 
 ### Esempio reale
 
@@ -240,7 +267,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**184 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**192 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -598,9 +625,11 @@ Dichiarati apertamente:
 - **Il testo libero non è trattato.** Colonne come `note` o `descrizione`
   richiedono riconoscimento di entità, non cifratura di campo. Una colonna
   `nome`, invece, è tutta un nome: quella si tratta.
-- **I nomi fuori lista si fermano.** Nomi stranieri, doppi nomi rari, grafie con
-  errori: `ValoreNonTrattabile`, e decide la policy. Allargare la lista è
-  possibile, ma va fatto prima di cifrare.
+- **I nomi fuori lista non restano nomi.** Vengono cifrati lettera per lettera,
+  quindi la colonna diventa un misto di nomi plausibili e stringhe evidentemente
+  finte. Allargare la lista riduce il fenomeno, ma va fatto prima di cifrare.
+- **Le lettere accentate fuori lista restano al loro posto.** `Nicolò` non in
+  lista diventa `Xqfzò`: l'accento non appartiene all'alfabeto cifrato.
 - **Il nome cifrato non conserva il genere.** `Mario` può diventare `Gaia`: se
   servono statistiche per genere devono venire da una colonna dedicata. È la
   stessa scelta fatta per la data di nascita dentro il codice fiscale.
