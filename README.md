@@ -267,7 +267,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**201 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**210 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -414,16 +414,26 @@ differenza pratica è che nel dubbio si interrompe — e interrompere a metà la
 la colonna in uno stato misto.
 
 ```
-cifra grosse.piva (PIVA) — 400,0k righe, 400,0k valori distinti
-  leggo i valori e calcolo i surrogati
-  240,0k/400,0k   60%  33,0k/s  mancano 5s
-  eseguo l'UPDATE sulle righe (istruzione unica)
-  fatto: 400,0k righe aggiornate in 11s
+cifra dbo.pazienti.cognome (COGNOME)
+  ⠙ conto le righe e i valori distinti  da 12s
+  2,4M righe, 380,0k valori distinti
+  ████████████░░░░░░░░░░░░  50%  190,0k/380,0k  33,0k/s  trascorsi 5s  mancano 5s
+  ⠋ eseguo l'UPDATE sulle righe (istruzione unica)  da 1m 14s
+  fatto: 2,4M righe aggiornate in 1m 26s
 ```
 
-A terminale è una riga che si aggiorna; dentro un file di log diventano righe
-intere ogni trenta secondi, perché una riga che si riscrive su sé stessa in un
-log produce solo spazzatura.
+**La riga si aggiorna da sola, non solo quando succede qualcosa.** È la
+differenza che conta: le fasi più lunghe non hanno eventi da cui aggiornarsi —
+il conteggio iniziale è una scansione della tabella, e l'`UPDATE` finale è una
+sola istruzione che su una tabella grande è il pezzo più lungo di tutti. Un
+thread ridisegna a intervalli fissi, così il cronometro scorre anche mentre il
+processo è fermo dentro una chiamata al database, ed è quello a dire "sta
+lavorando" quando non c'è una percentuale da mostrare.
+
+A terminale è una riga che si riscrive; dentro un file di log diventano righe
+intere — ogni trenta secondi **o ogni 5% percorso**, così un lavoro di due ore e
+uno di due minuti lasciano lo stesso numero di righe, una ventina, che è quanto
+serve a ricostruire l'andamento rileggendo il file.
 
 **E se hai chiuso la sessione?** L'avanzamento viene scritto anche nel registro,
 ogni pochi secondi, quindi `stato` risponde da qualunque altro terminale:
@@ -438,16 +448,16 @@ bin/proteo stato
 
 ```
 in_corso  grosse.piva  tipo=PIVA tweak=piva chiave_id=cd03…
-          200,0k/400,0k valori  50%  da 5s  mancano ~5s  leggo i valori e calcolo i surrogati
+          152,6k/400,0k valori  38%  da 5s  mancano ~9s  leggo i valori e calcolo i surrogati
 ```
 
 È anche ciò che distingue i due significati di `in_corso`: un'esecuzione che sta
 lavorando adesso, e una rimasta a metà mesi fa. Se i contatori avanzano fra due
 `stato`, sta lavorando.
 
-L'ultima fase — l'`UPDATE` — è una sola istruzione che tocca tutte le righe:
-lì non c'è più granularità da mostrare, e può durare a lungo. Viene annunciata
-esplicitamente, perché un'attesa muta in quel punto sembra un blocco.
+L'avanzamento sul disco si aggiorna ogni due secondi: abbastanza spesso da
+vedere i numeri muoversi fra due `stato` consecutivi, che è il modo pratico di
+distinguere un processo vivo da uno morto.
 
 ### Una colonna alla volta
 

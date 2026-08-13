@@ -296,6 +296,15 @@ class Motore:
         """
         from .avanzamento import Silenzioso
         av = avanzamento or Silenzioso()
+        try:
+            return self._esegui(verso, su_valore_non_trattabile, av, solo)
+        finally:
+            # Il battito e' un thread: va fermato anche se l'esecuzione e'
+            # fallita a meta', altrimenti continua a scrivere sopra i messaggi
+            # d'errore.
+            av.chiudi()
+
+    def _esegui(self, verso, su_valore_non_trattabile, av, solo):
         errori = self.errori(verso, solo)
         if errori:
             raise VerificaFallita(errori)
@@ -310,10 +319,12 @@ class Motore:
             # Il conteggio costa una scansione, e su una colonna grande si
             # sente: si paga perche' senza il totale non esistono ne'
             # percentuale ne' tempo rimasto, cioe' le due cose che permettono di
-            # decidere se aspettare o annullare.
+            # decidere se aspettare o annullare. La fase si annuncia PRIMA,
+            # altrimenti quei minuti passano senza che nulla si muova.
+            av.inizio(tabella, colonna, tipo, verso)
             av.fase("conto le righe e i valori distinti")
             righe_totali, distinti = db.conta(self.engine, tabella, colonna)
-            av.colonna(tabella, colonna, tipo, verso, righe_totali, distinti)
+            av.totali(righe_totali, distinti)
 
             self.registro.avvia(self.database, tabella, colonna, tipo,
                                 tweak.decode(), self.chiave_id, verso,
@@ -351,8 +362,11 @@ class Motore:
             if scelta and not scelta(tabella, colonna):
                 continue
             if av:
+                av.inizio(tabella, colonna, "azzera", verso)
+                av.fase("conto le righe")
                 righe_totali, distinti = db.conta(self.engine, tabella, colonna)
-                av.colonna(tabella, colonna, "azzera", verso, righe_totali, distinti)
+                av.totali(righe_totali, distinti)
+                av.fase("azzero la colonna")
             # Passa dal registro come la cifratura: e' l'unica cosa che sappia
             # dire, dopo, perche' quella colonna e' vuota — una colonna svuotata
             # e una colonna sempre stata vuota si somigliano troppo.
@@ -375,6 +389,12 @@ class Motore:
         return (self.surr.cifra(tipo, v, tweak) if verso == "cifra"
                 else self.surr.decifra(tipo, v, tweak))
 
+    # Ogni quanti valori riportare l'avanzamento. Un lotto di scrittura e'
+    # 10.000: aspettare quello significa una barra che si muove ogni parecchi
+    # secondi. Qui invece il conteggio segue il lavoro vero, che e' il calcolo
+    # dei surrogati, e la barra scorre di continuo.
+    PASSO_AVANZAMENTO = 256
+
     def _coppie(self, tabella, colonna, tipo, tweak, verso, scarti, su_errore,
                 av=None):
         """Generatore (vecchio, nuovo) sui valori distinti.
@@ -383,8 +403,12 @@ class Motore:
         di appoggio, quindi la memoria resta limitata anche con milioni di valori
         distinti.
         """
+        fatti = 0
         for blocco in db.leggi_distinti(self.engine, tabella, colonna):
             for v in blocco:
+                fatti += 1
+                if av and fatti % self.PASSO_AVANZAMENTO == 0:
+                    av.avanti(fatti)
                 try:
                     yield v, self._trasforma(tipo, v, tweak, verso)
                 except ValoreNonTrattabile as e:

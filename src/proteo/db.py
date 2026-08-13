@@ -44,7 +44,7 @@ LOTTO_SCRITTURA = 10_000
 class _Niente:
     """Avanzamento che non dice niente: evita un `if` a ogni lotto."""
 
-    def fase(self, descrizione):
+    def fase(self, descrizione, contabile=False):
         pass
 
     def avanti(self, elaborati):
@@ -278,7 +278,7 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
     )
 
     with engine.begin() as conn:
-        avanzamento.fase("leggo i valori e calcolo i surrogati")
+        avanzamento.fase("leggo i valori e calcolo i surrogati", contabile=True)
         mappa.create(conn)
         try:
             n_mappate, buffer = 0, []
@@ -299,6 +299,8 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
             # Una sola istruzione, che tocca tutte le righe: da qui in poi non
             # c'e' piu' granularita' da mostrare, e puo' durare a lungo. Dirlo
             # e' l'unico modo perche' un'attesa lunga non sembri un blocco.
+            # Da qui in poi non c'e' piu' niente da contare: una sola
+            # istruzione, che pero' su una tabella grande e' il pezzo piu' lungo.
             avanzamento.fase("eseguo l'UPDATE sulle righe (istruzione unica)")
             c = t.c[colonna]
             sub = select(mappa.c.nuovo).where(mappa.c.vecchio == c).scalar_subquery()
