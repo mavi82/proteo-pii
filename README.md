@@ -267,7 +267,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**210 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**217 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -405,6 +405,49 @@ Da riga di comando è `--righe N` (default 30, `--righe 0` per non vederla).
 **Con `--si` non viene mostrata a meno di chiederla esplicitamente**: l'uso da
 script finisce quasi sempre in un file di log, e lì quei valori veri
 resterebbero scritti in chiaro.
+
+### Perché durante la cifratura il database sembra bloccato
+
+Non è un difetto, è il prezzo dichiarato di una scelta: **tutto avviene in una
+sola transazione**. Le righe della tabella restano bloccate dall'inizio del
+calcolo dei surrogati fino alla fine dell'`UPDATE`, quindi chi legge quella
+tabella da un'altra sessione aspetta. Su SQL Server, oltre una certa quantità di
+righe il lock passa da riga a tabella intera, e l'attesa diventa evidente.
+
+L'alternativa — riempire la tabella di appoggio fuori dalla transazione, e
+tenere la transazione solo per l'`UPDATE` — accorcerebbe di molto il blocco, ma
+lascerebbe su disco la mappa in chiaro `valore → surrogato` ogni volta che il
+processo muore. Il blocco è preferibile.
+
+**Se interrompi**, il database annulla la transazione, e il rollback può durare
+quanto il lavoro fatto fino a quel momento: fino ad allora i lock restano. Da
+qui due regole pratiche: dai un `Ctrl-C` solo e aspetta, e non mandare `kill -9`
+— quello lascia la sessione aperta lato server finché la connessione non cade da
+sola, e in quel tempo la tabella resta inutilizzabile. Su SQL Server, se devi
+liberarla:
+
+```sql
+SELECT session_id, blocking_session_id, status, command, wait_type
+FROM sys.dm_exec_requests WHERE blocking_session_id <> 0;
+```
+
+```sql
+KILL 57;   -- il session_id che blocca
+```
+
+Dopo un'interruzione, `stato` dice cosa è rimasto in mezzo, e `pulisci` rimuove
+le tabelle di appoggio sopravvissute:
+
+```bash
+bin/proteo pulisci
+```
+
+Quelle tabelle contengono la corrispondenza in chiaro fra valori veri e
+surrogati — l'unica cosa in tutto il progetto che somigli a un dizionario —
+quindi vengono cercate invece di aspettare che qualcuno le noti. Con una
+transazione andata a buon fine non ne resta nessuna; ne sopravvive una solo se
+il processo è stato ucciso su un motore dove il `CREATE TABLE` non è
+transazionale (MySQL, SQLite).
 
 ### Seguire una cifratura lunga
 

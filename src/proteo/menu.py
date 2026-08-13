@@ -331,6 +331,7 @@ def _azione_stato(config, nome, engine):
     etichetta = voce.get("etichetta") or nome
     print("\nregistro di %s:" % etichetta)
     stampa.stato(registro.elenco(etichetta), registro.interrotte(etichetta))
+    stampa.orfane(db.mappe_orfane(engine))
 
 
 def _azione_verifica(config, nome, engine, verso="cifra"):

@@ -30,15 +30,20 @@ valore originale.
 import secrets
 
 from sqlalchemy import (Column, MetaData, String, Table, create_engine, delete,
-                       func, insert, inspect, select, update)
+                       func, insert, inspect, select, text, update)
 from sqlalchemy.engine import make_url
 
 __all__ = ["crea_engine", "prova_connessione", "anomalie_url",
-           "elenco_tabelle", "introspeziona",
-           "conta", "leggi_distinti", "applica_mappa", "azzera", "dividi_nome"]
+           "elenco_tabelle", "introspeziona", "conta", "leggi_distinti",
+           "applica_mappa", "azzera", "dividi_nome",
+           "mappe_orfane", "elimina_mappa"]
 
 LOTTO_LETTURA = 50_000
 LOTTO_SCRITTURA = 10_000
+
+# Le tabelle di appoggio si riconoscono dal nome: e' cio' che permette di
+# ritrovarne una rimasta indietro dopo un processo ucciso.
+PREFISSO_MAPPA = "_proteo_map_"
 
 
 class _Niente:
@@ -271,12 +276,19 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
     # nome irripetibile: due esecuzioni in parallelo su colonne diverse non
     # devono contendersi la stessa tabella di appoggio
     mappa = Table(
-        "_proteo_map_%s" % secrets.token_hex(6), md,
+        PREFISSO_MAPPA + secrets.token_hex(6), md,
         Column("vecchio", String(512), primary_key=True),
         Column("nuovo", String(512), nullable=False),
         schema=schema,
     )
 
+    # Tutto in UNA transazione, ed e' una scelta con un prezzo: le righe della
+    # tabella restano bloccate dall'inizio del calcolo fino alla fine
+    # dell'UPDATE, quindi su una tabella grande chi legge da un'altra sessione
+    # aspetta. Il prezzo si paga perche' l'alternativa — riempire la tabella di
+    # appoggio fuori dalla transazione — lascerebbe su disco la mappa in chiaro
+    # ogni volta che il processo muore.
+    fallita = False
     with engine.begin() as conn:
         avanzamento.fase("leggo i valori e calcolo i surrogati", contabile=True)
         mappa.create(conn)
@@ -308,10 +320,49 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
                 update(t).values({colonna: sub})
                          .where(c.in_(select(mappa.c.vecchio))))
             toccate = res.rowcount
+        except BaseException:
+            # BaseException e non Exception: un Ctrl-C arriva come
+            # KeyboardInterrupt, ed e' proprio il caso da cui ci si vuole
+            # difendere qui.
+            fallita = True
+            avanzamento.fase("annullo la transazione (rollback): puo' durare "
+                             "quanto il lavoro fatto finora — NON uccidere il "
+                             "processo, peggiorerebbe le cose")
+            raise
         finally:
             # nella stessa transazione: la tabella di appoggio contiene la mappa
             # in chiaro fra valore vero e surrogato, ed e' l'unica cosa in tutto
             # il progetto che somigli a un dizionario. Non deve sopravvivere.
-            conn.execute(delete(mappa))
-            mappa.drop(conn)
+            #
+            # Se pero' si sta gia' uscendo per un errore, questa pulizia non
+            # deve poter sollevarne un secondo: mascherebbe quello vero, che e'
+            # l'unico che dice cosa e' successo. Il rollback fa sparire la
+            # tabella dove il DDL e' transazionale (SQL Server, PostgreSQL);
+            # dove non lo e' — MySQL, e SQLite per come il driver gestisce le
+            # transazioni implicite — resta questa drop. Se anche quella non
+            # arriva, perche' il processo e' stato ucciso, la tabella si ritrova
+            # con `mappe_orfane`.
+            try:
+                conn.execute(delete(mappa))
+                mappa.drop(conn)
+            except Exception:                               # noqa: BLE001
+                if not fallita:
+                    raise
     return toccate
+
+
+def mappe_orfane(engine, schema=None):
+    """Tabelle di appoggio rimaste indietro. Dovrebbero essere sempre zero.
+
+    Una ne sopravvive solo se il processo e' stato ucciso mentre lavorava, su un
+    motore dove il DDL non e' transazionale. Contiene la corrispondenza in
+    chiaro fra valori veri e surrogati: e' la cosa piu' pericolosa che Proteo
+    scriva, e va trovata invece che aspettare che qualcuno la noti.
+    """
+    return [t for t in elenco_tabelle(engine, schema)
+            if dividi_nome(t)[1].startswith(PREFISSO_MAPPA)]
+
+
+def elimina_mappa(engine, tabella):
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE %s" % tabella))

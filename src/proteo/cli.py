@@ -14,6 +14,7 @@ uno script, e seguono l'ordine in cui vanno usati:
     bozza-policy  allinea la policy allo schema (--rileva riconosce le colonne)
     prova         prova solo la connessione
     stato         cosa risulta al registro
+    pulisci       elimina le tabelle di appoggio rimaste indietro
     verifica      i cancelli fail-closed, senza toccare nulla
     anteprima     prima/dopo su un campione, senza toccare nulla
     cifra         SCRIVE
@@ -303,6 +304,36 @@ def cmd_bozza_policy(args):
             print("  %s.%s -> %s.%s" % (t1, c1, t2, c2))
 
 
+def cmd_pulisci(args):
+    """Cerca ed elimina le tabelle di appoggio rimaste indietro.
+
+    Ne resta una solo se un processo e' stato ucciso mentre lavorava. Contiene
+    la corrispondenza in chiaro fra valori veri e surrogati — la cosa piu'
+    pericolosa che Proteo scriva — quindi si cerca invece di aspettare che
+    qualcuno la noti.
+    """
+    engine = _engine(args)
+    orfane = db.mappe_orfane(engine, args.schema)
+    if not orfane:
+        print("nessuna tabella di appoggio rimasta indietro.")
+        return
+
+    print("%d tabelle di appoggio ancora nel database:" % len(orfane))
+    for tabella in orfane:
+        righe, _ = db.conta(engine, tabella)
+        print("  %s  (%d righe: valore vero -> surrogato, IN CHIARO)"
+              % (tabella, righe))
+    print("\nSe una cifratura e' in corso ADESSO, una di queste e' la sua: "
+          "eliminarla\nla farebbe fallire. Controlla prima con 'stato'.")
+    if not args.si:
+        if input("\neliminarle? [y/n]: ").strip().lower() not in SI:
+            print("annullato.")
+            return
+    for tabella in orfane:
+        db.elimina_mappa(engine, tabella)
+        print("  eliminata %s" % tabella)
+
+
 def cmd_stato(args):
     config, voce = _config(args)
     engine = _apri(args, config, voce)
@@ -310,6 +341,7 @@ def cmd_stato(args):
     database = _nome_database(args, config, voce, engine)
     print("registro di %s:" % database)
     stampa.stato(registro.elenco(database), registro.interrotte(database))
+    stampa.orfane(db.mappe_orfane(engine))
 
 
 def cmd_verifica(args):
@@ -445,6 +477,12 @@ def _parser():
     s = comune("stato", "cosa risulta al registro")
     s.set_defaults(func=cmd_stato)
 
+    s = comune("pulisci", "elimina le tabelle di appoggio rimaste indietro")
+    s.add_argument("--schema", help="limita a uno schema")
+    s.add_argument("--si", "-y", action="store_true",
+                   help="salta la conferma interattiva")
+    s.set_defaults(func=cmd_pulisci)
+
     s = comune("verifica", "i cancelli fail-closed, senza scrivere", con_chiave=True)
     s.add_argument("--verso", choices=("cifra", "decifra"), default="cifra")
     s.set_defaults(func=cmd_verifica)
@@ -485,9 +523,12 @@ def main(argv=None):
     except KeyboardInterrupt:
         # Un'interruzione durante `esegui` lascia la voce del registro in
         # 'in_corso': e' il segnale corretto, non un difetto. La transazione
-        # invece torna indietro da sola.
-        print("\ninterrotto. Controlla 'stato': una colonna in 'in_corso' va "
-              "risolta a mano.", file=sys.stderr)
+        # invece torna indietro da sola — ma il rollback puo' durare quanto il
+        # lavoro fatto, e in quel tempo il database tiene ancora i lock.
+        print("\ninterrotto. Il database sta annullando la transazione: puo' "
+              "durare\nquanto il lavoro fatto finora, e fino ad allora la "
+              "tabella resta bloccata.\nControlla poi 'stato' e 'pulisci'.",
+              file=sys.stderr)
         return 130
     return 0
 

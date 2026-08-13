@@ -7,7 +7,7 @@ testo divergono, e il giorno in cui divergono e' il giorno in cui una delle due
 smette di nominare qualcosa di importante.
 """
 
-__all__ = ["problemi", "anteprima", "rapporto", "stato"]
+__all__ = ["problemi", "anteprima", "rapporto", "stato", "orfane"]
 
 
 def problemi(elenco):
@@ -160,6 +160,23 @@ def stato(voci, interrotte=()):
               "lavorando adesso (guarda l'ora qui sopra: se avanza, avanza), "
               "oppure ne e' rimasta a meta' e la colonna e' in uno stato misto."
               % len(interrotte))
+
+
+def orfane(tabelle):
+    """Tabelle di appoggio rimaste nel database. Zero, se tutto e' andato bene.
+
+    Non e' un dettaglio di manutenzione: quelle tabelle contengono la
+    corrispondenza in chiaro fra valori veri e surrogati, cioe' l'unica cosa in
+    tutto il progetto che somigli a un dizionario. Va detto ad alta voce.
+    """
+    if not tabelle:
+        return
+    print("\n%d tabelle di appoggio presenti nel database:" % len(tabelle))
+    for tabella in tabelle:
+        print("  %s" % tabella)
+    print("Se nessuna colonna qui sopra e' 'in_corso', sono avanzi di un "
+          "processo ucciso, e\ncontengono la mappa IN CHIARO valore -> "
+          "surrogato: eliminale con 'pulisci'.")
 
 
 def _avanzamento(voce):
