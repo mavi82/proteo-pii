@@ -267,7 +267,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**217 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**228 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -414,10 +414,36 @@ calcolo dei surrogati fino alla fine dell'`UPDATE`, quindi chi legge quella
 tabella da un'altra sessione aspetta. Su SQL Server, oltre una certa quantità di
 righe il lock passa da riga a tabella intera, e l'attesa diventa evidente.
 
-L'alternativa — riempire la tabella di appoggio fuori dalla transazione, e
-tenere la transazione solo per l'`UPDATE` — accorcerebbe di molto il blocco, ma
-lascerebbe su disco la mappa in chiaro `valore → surrogato` ogni volta che il
-processo muore. Il blocco è preferibile.
+Se il blocco è un problema — perché altre applicazioni leggono quella tabella
+mentre Proteo lavora — si può scrivere **a lotti di righe** invece che in
+un'unica transazione:
+
+```bash
+bin/proteo cifra --lotto-righe 1000
+```
+
+o, per non ripeterlo ogni volta, `"lotto_righe": 1000` nella voce del config.
+Il lock allora dura quanto un lotto, non quanto l'intera colonna.
+
+I lotti sono **per chiave primaria**, e non è un dettaglio: a lotti di *valori*
+si ricadrebbe esattamente nell'effetto domino descritto sopra — il lotto che
+porta le righe `A` in `B` le esporrebbe al lotto successivo, che le manderebbe
+in `C`. Per chiave gli intervalli sono disgiunti e ordinati, quindi ogni riga
+viene toccata una volta sola. La mappa resta completa prima che il primo lotto
+parta, come nella versione atomica. Su una tabella senza chiave primaria, o con
+chiave composta, Proteo torna da sé alla transazione unica: senza un ordine
+stabile i lotti si sovrapporrebbero.
+
+Il prezzo dei lotti è dichiarato: **si perde l'atomicità**. Un'interruzione
+lascia la colonna a metà — le righe fino all'ultima chiave trattata sono
+cifrate, le altre no — e quella metà va risolta a mano, perché guardando la
+colonna non si distingue quale riga è già passata. L'ultima chiave raggiunta
+finisce nel registro, ed è l'unico appiglio per capire dove ci si era fermati.
+Inoltre la tabella di appoggio vive fuori dalla transazione, quindi un processo
+ucciso la lascia su disco con dentro la mappa in chiaro: `pulisci` la rimuove.
+
+Il default resta la transazione unica, perché fra un lock lungo e una colonna a
+metà il primo è il danno reversibile.
 
 **Se interrompi**, il database annulla la transazione, e il rollback può durare
 quanto il lavoro fatto fino a quel momento: fino ad allora i lock restano. Da

@@ -183,8 +183,12 @@ def _motore(args):
         raise Uscita("policy illeggibile: %s" % e)
 
     engine = _apri(args, config, voce)
+    lotto = getattr(args, "lotto_righe", None)
+    if lotto is None:
+        lotto = voce.get("lotto_righe")
     motore = Motore(engine, policy, chiave, kid, Registro(registro_p or "registro"),
-                    _nome_database(args, config, voce, engine))
+                    _nome_database(args, config, voce, engine),
+                    lotto_righe=int(lotto) if lotto else None)
     print("database: %s   chiave: %s   registro: %s"
           % (motore.database, kid, Path(registro_p or "registro").resolve()),
           file=sys.stderr)
@@ -506,6 +510,10 @@ def _parser():
                        choices=("ferma", "salta"), default="ferma",
                        help="valore malformato: fermarsi (default) o saltarlo "
                             "lasciandolo IN CHIARO")
+        s.add_argument("--lotto-righe", dest="lotto_righe", type=int,
+                       help="scrive a lotti di N righe invece che in un'unica "
+                            "transazione: meno lock, ma un'interruzione lascia "
+                            "la colonna a meta'")
         s.add_argument("--righe", type=int, default=30, nargs="?", const=30,
                        help="prime N righe con prima/dopo prima di confermare "
                             "(default: 30, 0 per non mostrarle). Con --si sono "

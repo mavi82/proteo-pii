@@ -319,7 +319,9 @@ def _motore(config, nome, engine=None):
 
     return Motore(engine, policy, chiave, kid,
                   Registro(config.risolvi(voce, "registro")),
-                  voce.get("etichetta") or nome)
+                  voce.get("etichetta") or nome,
+                  lotto_righe=int(voce["lotto_righe"]) if voce.get("lotto_righe")
+                  else None)
 
 
 # --------------------------------------------------------------------------- #

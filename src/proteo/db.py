@@ -35,7 +35,7 @@ from sqlalchemy.engine import make_url
 
 __all__ = ["crea_engine", "prova_connessione", "anomalie_url",
            "elenco_tabelle", "introspeziona", "conta", "leggi_distinti",
-           "applica_mappa", "azzera", "dividi_nome",
+           "applica_mappa", "applica_mappa_a_lotti", "azzera", "dividi_nome",
            "mappe_orfane", "elimina_mappa"]
 
 LOTTO_LETTURA = 50_000
@@ -45,11 +45,14 @@ LOTTO_SCRITTURA = 10_000
 # ritrovarne una rimasta indietro dopo un processo ucciso.
 PREFISSO_MAPPA = "_proteo_map_"
 
+# Righe per lotto quando si scrive a lotti invece che in un'unica transazione.
+LOTTO_RIGHE = 1000
+
 
 class _Niente:
     """Avanzamento che non dice niente: evita un `if` a ogni lotto."""
 
-    def fase(self, descrizione, contabile=False):
+    def fase(self, descrizione, contabile=False, totale=-1):
         pass
 
     def avanti(self, elaborati):
@@ -246,6 +249,34 @@ def azzera(engine, tabella, colonna):
                                      .values({colonna: None})).rowcount
 
 
+def _tabella_mappa(md, schema):
+    """Nome irripetibile: due esecuzioni in parallelo su colonne diverse non
+    devono contendersi la stessa tabella di appoggio."""
+    return Table(
+        PREFISSO_MAPPA + secrets.token_hex(6), md,
+        Column("vecchio", String(512), primary_key=True),
+        Column("nuovo", String(512), nullable=False),
+        schema=schema,
+    )
+
+
+def _riempi(conn, mappa, coppie, lotto, avanzamento):
+    """Versa le coppie nella tabella di appoggio. Ritorna quante ne ha scritte."""
+    n_mappate, buffer = 0, []
+    for vecchio, nuovo in coppie:
+        buffer.append({"vecchio": vecchio, "nuovo": nuovo})
+        if len(buffer) >= lotto:
+            conn.execute(insert(mappa), buffer)
+            n_mappate += len(buffer)
+            buffer = []
+            avanzamento.avanti(n_mappate)
+    if buffer:
+        conn.execute(insert(mappa), buffer)
+        n_mappate += len(buffer)
+    avanzamento.avanti(n_mappate)
+    return n_mappate
+
+
 def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
                   avanzamento=None):
     """Applica {vecchio: nuovo} con un solo UPDATE. Ritorna le righe toccate.
@@ -273,14 +304,7 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
     md = MetaData()
     t = _tabella(engine, tabella, md)
     schema, _ = dividi_nome(tabella)
-    # nome irripetibile: due esecuzioni in parallelo su colonne diverse non
-    # devono contendersi la stessa tabella di appoggio
-    mappa = Table(
-        PREFISSO_MAPPA + secrets.token_hex(6), md,
-        Column("vecchio", String(512), primary_key=True),
-        Column("nuovo", String(512), nullable=False),
-        schema=schema,
-    )
+    mappa = _tabella_mappa(md, schema)
 
     # Tutto in UNA transazione, ed e' una scelta con un prezzo: le righe della
     # tabella restano bloccate dall'inizio del calcolo fino alla fine
@@ -293,18 +317,7 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
         avanzamento.fase("leggo i valori e calcolo i surrogati", contabile=True)
         mappa.create(conn)
         try:
-            n_mappate, buffer = 0, []
-            for vecchio, nuovo in coppie:
-                buffer.append({"vecchio": vecchio, "nuovo": nuovo})
-                if len(buffer) >= lotto:
-                    conn.execute(insert(mappa), buffer)
-                    n_mappate += len(buffer)
-                    buffer = []
-                    avanzamento.avanti(n_mappate)
-            if buffer:
-                conn.execute(insert(mappa), buffer)
-                n_mappate += len(buffer)
-            avanzamento.avanti(n_mappate)
+            n_mappate = _riempi(conn, mappa, coppie, lotto, avanzamento)
             if not n_mappate:
                 return 0
 
@@ -349,6 +362,99 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
                 if not fallita:
                     raise
     return toccate
+
+
+def applica_mappa_a_lotti(engine, tabella, colonna, coppie, chiave,
+                          lotto_righe=LOTTO_RIGHE, lotto=LOTTO_SCRITTURA,
+                          avanzamento=None, su_lotto=None):
+    """Come `applica_mappa`, ma scrivendo a lotti di righe. Meno lock, meno atomicita'.
+
+    ## Perche' a lotti PER CHIAVE e non per valore
+
+    Un lotto per valore ("prendi mille valori della mappa e applicali")
+    ricadrebbe esattamente nell'errore che questo modulo esiste per evitare: se
+    A->B e B->C, il lotto che porta le righe A in B le espone al lotto
+    successivo, che le ripesca e le manda in C.
+
+    A lotti di **chiave primaria** non succede: gli intervalli sono disgiunti e
+    ordinati, quindi una riga aggiornata nel lotto 1 non ricade mai nel lotto 2.
+    Il predicato `chiave > ultima AND chiave <= confine` seleziona per posizione,
+    non per contenuto, ed e' cio' che rende l'operazione sicura. La mappa e'
+    completa prima che il primo lotto parta, quindi ogni riga si calcola dal
+    proprio valore originale come nella versione a transazione unica.
+
+    ## Cosa si perde
+
+    L'atomicita'. Un'interruzione lascia la colonna **a meta'**: le righe fino
+    all'ultima chiave trattata sono cifrate, le altre no, e nessuna operazione
+    automatica sarebbe corretta su entrambe le meta'. Per questo l'ultima chiave
+    raggiunta viene passata a `su_lotto`, che la scrive nel registro: e' l'unico
+    modo di sapere dove si era arrivati.
+
+    E la tabella di appoggio vive fuori dalla transazione, quindi un processo
+    ucciso la lascia su disco con dentro la mappa in chiaro. `mappe_orfane` la
+    ritrova, `pulisci` la elimina.
+    """
+    avanzamento = avanzamento or _NIENTE
+    md = MetaData()
+    t = _tabella(engine, tabella, md)
+    schema, _ = dividi_nome(tabella)
+    mappa = _tabella_mappa(md, schema)
+
+    with engine.begin() as conn:
+        avanzamento.fase("leggo i valori e calcolo i surrogati", contabile=True)
+        mappa.create(conn)
+        n_mappate = _riempi(conn, mappa, coppie, lotto, avanzamento)
+    if not n_mappate:
+        with engine.begin() as conn:
+            mappa.drop(conn)
+        return 0
+
+    pk = t.c[chiave]
+    c = t.c[colonna]
+    sub = select(mappa.c.nuovo).where(mappa.c.vecchio == c).scalar_subquery()
+    toccate, ultima = 0, None
+    try:
+        # denominatore = le righe della tabella: da qui in poi si contano
+        # quelle, non piu' i valori distinti
+        avanzamento.fase("scrivo le righe, a lotti di %d" % lotto_righe,
+                         contabile=True, totale=None)
+        while True:
+            with engine.begin() as conn:
+                # Il confine del lotto si legge dentro la stessa transazione
+                # dell'UPDATE: leggerlo prima aprirebbe una finestra in cui
+                # qualcun altro puo' inserire righe fra le due chiavi.
+                confine = _confine(conn, pk, ultima, lotto_righe)
+                if confine is None:
+                    break
+                dove = pk <= confine if ultima is None else \
+                    (pk > ultima) & (pk <= confine)
+                res = conn.execute(update(t).values({colonna: sub})
+                                   .where(dove & c.in_(select(mappa.c.vecchio))))
+                toccate += res.rowcount
+                ultima = confine
+            # fuori dalla transazione: il registro segna cio' che e' gia'
+            # committato, mai cio' che potrebbe ancora tornare indietro
+            if su_lotto:
+                su_lotto(ultima, toccate)
+            avanzamento.avanti(toccate)
+    finally:
+        try:
+            with engine.begin() as conn:
+                conn.execute(delete(mappa))
+                mappa.drop(conn)
+        except Exception:                                   # noqa: BLE001
+            pass          # resta su disco: la trova `mappe_orfane`
+    return toccate
+
+
+def _confine(conn, pk, ultima, quante):
+    """Ultima chiave del prossimo lotto, o None se non ci sono piu' righe."""
+    q = select(pk).order_by(pk).limit(quante)
+    if ultima is not None:
+        q = q.where(pk > ultima)
+    chiavi = [r[0] for r in conn.execute(q)]
+    return chiavi[-1] if chiavi else None
 
 
 def mappe_orfane(engine, schema=None):

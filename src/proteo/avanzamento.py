@@ -89,7 +89,7 @@ class Silenzioso:
     def totali(self, righe, distinti):
         pass
 
-    def fase(self, descrizione, contabile=False):
+    def fase(self, descrizione, contabile=False, totale=None):
         pass
 
     def avanti(self, elaborati):
@@ -129,7 +129,7 @@ class Avanzamento(Silenzioso):
 
     def _reset(self):
         self.tabella = self.colonna_ = self.tipo = self.verso = None
-        self.righe = self.distinti = None
+        self.righe = self.distinti = self.totale = None
         self.elaborati = 0
         self.inizio_colonna = time.time()
         self.inizio_fase = time.time()
@@ -152,20 +152,30 @@ class Avanzamento(Silenzioso):
 
     def totali(self, righe, distinti):
         self.righe, self.distinti = righe, distinti
+        self.totale = distinti
         self._riga("  %s righe, %s valori distinti"
                    % (quantita(righe), quantita(distinti)))
 
-    def fase(self, descrizione, contabile=False):
+    def fase(self, descrizione, contabile=False, totale=-1):
         """`contabile` = questa fase ha un avanzamento da contare.
 
-        Le altre — il conteggio, l'UPDATE — non ne hanno: li' si mostra il
-        cronometro, che e' l'unica cosa che continua a muoversi ed e' quanto
-        basta a distinguere "sta lavorando" da "e' piantato".
+        Le altre — il conteggio, l'UPDATE in un colpo solo — non ne hanno: li'
+        si mostra il cronometro, che e' l'unica cosa che continua a muoversi ed
+        e' quanto basta a distinguere "sta lavorando" da "e' piantato".
+
+        `totale` cambia il denominatore: le fasi contano cose diverse — la prima
+        i valori distinti, la scrittura a lotti le righe — e una barra che
+        cambia unita' senza dirlo mente. `None` significa "usa il numero di
+        righe della tabella".
         """
         with self.lucchetto:
             self.descrizione = descrizione
             self.contabile = contabile
             self.inizio_fase = time.time()
+            if totale != -1:
+                self.totale = totale if totale is not None else self.righe
+                self.elaborati = 0
+                self.ultimo_passo = -1
         self._scrivi_registro(forza=True)
         self._disegna(forza=True)
 
@@ -222,14 +232,14 @@ class Avanzamento(Silenzioso):
         trascorso = max(adesso - self.inizio_colonna, 1e-6)
         self.giro += 1
 
-        if self.contabile and self.distinti:
+        if self.contabile and self.totale:
             velocita = self.elaborati / trascorso
-            mancano = ((self.distinti - self.elaborati) / velocita
+            mancano = ((self.totale - self.elaborati) / velocita
                        if velocita > 0 else None)
             return "  %s %3d%%  %s/%s  %s/s  trascorsi %s  mancano %s" % (
-                barra(self.elaborati, self.distinti),
-                100 * self.elaborati // max(self.distinti, 1),
-                quantita(self.elaborati), quantita(self.distinti),
+                barra(self.elaborati, self.totale),
+                100 * self.elaborati // max(self.totale, 1),
+                quantita(self.elaborati), quantita(self.totale),
                 quantita(int(velocita)), durata(trascorso), durata(mancano))
 
         # Fase senza contatore: il cronometro e' l'unica cosa che si muove, e
@@ -253,8 +263,8 @@ class Avanzamento(Silenzioso):
             # ventina, che e' quanto serve a ricostruire l'andamento rileggendo
             # il file. A solo tempo, il lavoro corto non lascerebbe traccia.
             adesso = time.time()
-            passo = (100 * self.elaborati // max(self.distinti or 0, 1) // 5
-                     if self.contabile and self.distinti else self.ultimo_passo)
+            passo = (100 * self.elaborati // max(self.totale or 0, 1) // 5
+                     if self.contabile and self.totale else self.ultimo_passo)
             if forza or adesso - self.ultimo_log >= INTERVALLO_LOG \
                     or passo > self.ultimo_passo:
                 self.ultimo_log, self.ultimo_passo = adesso, passo

@@ -36,12 +36,16 @@ class VerificaFallita(RuntimeError):
 
 
 class Motore:
-    def __init__(self, engine, policy, chiave, chiave_id, registro, database):
+    def __init__(self, engine, policy, chiave, chiave_id, registro, database,
+                 lotto_righe=None):
         self.engine = engine
         self.policy = policy
         self.chiave_id = chiave_id
         self.registro = registro if isinstance(registro, Registro) else Registro(registro)
         self.database = database
+        # None = una sola transazione per colonna (atomica, ma tiene i lock per
+        # tutta la durata). Un numero = si scrive a lotti di quelle righe.
+        self.lotto_righe = lotto_righe
         self.surr = Surrogatore(chiave)
 
     # -- verifica ----------------------------------------------------------- #
@@ -332,8 +336,7 @@ class Motore:
             scarti = []
             coppie = self._coppie(tabella, colonna, tipo, tweak, verso,
                                   scarti, su_valore_non_trattabile, av)
-            toccate = db.applica_mappa(self.engine, tabella, colonna, coppie,
-                                       avanzamento=av)
+            toccate = self._scrivi(tabella, colonna, coppie, av)
             av.conclusa(toccate)
 
             stato = CIFRATA if verso == "cifra" else IN_CHIARO
@@ -346,6 +349,42 @@ class Motore:
 
         rapporto["colonne"].extend(self._azzera(verso, av, scelta))
         return rapporto
+
+    def _scrivi(self, tabella, colonna, coppie, av):
+        """Una transazione sola, o a lotti di righe. La differenza e' il lock.
+
+        A transazione unica l'operazione e' atomica ma tiene bloccate le righe
+        dall'inizio del calcolo alla fine della scrittura. A lotti il blocco
+        dura quanto un lotto, ma un'interruzione lascia la colonna **a meta'** —
+        e quella meta' va risolta a mano, perche' nessuna operazione automatica
+        sarebbe corretta su entrambe.
+        """
+        chiave = self._chiave_primaria(tabella)
+        if not self.lotto_righe or not chiave:
+            return db.applica_mappa(self.engine, tabella, colonna, coppie,
+                                    avanzamento=av)
+
+        def segna(ultima, righe):
+            # Nel registro finisce solo cio' che e' gia' committato: e' l'unico
+            # appiglio per capire, dopo un'interruzione, dove ci si era fermati.
+            self.registro.avanzamento(self.database, tabella, colonna,
+                                      ultima_chiave=str(ultima), righe=righe)
+
+        return db.applica_mappa_a_lotti(
+            self.engine, tabella, colonna, coppie, chiave,
+            lotto_righe=self.lotto_righe, avanzamento=av, su_lotto=segna)
+
+    def _chiave_primaria(self, tabella):
+        """La chiave primaria, se e' una sola colonna.
+
+        Su una chiave composta i lotti non si sanno delimitare con un semplice
+        `>`, e su una tabella senza chiave primaria non esiste un ordine
+        stabile: in entrambi i casi si torna alla transazione unica, che non ha
+        bisogno di ordinare niente. Meglio un lock lungo che lotti che si
+        sovrappongono.
+        """
+        chiavi = self.schema()["chiavi_primarie"].get(tabella) or []
+        return chiavi[0] if len(chiavi) == 1 else None
 
     def _azzera(self, verso, av=None, scelta=None):
         """Svuota le colonne dichiarate `azzera`. Solo in cifratura.
