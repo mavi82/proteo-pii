@@ -50,6 +50,7 @@ from sqlalchemy.engine import make_url
 from . import config as cfg
 from . import avanzamento as av
 from . import db, diagnosi, keyfile, rilevamento, stampa
+from .stampa import SI
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
 from .registro import Registro
@@ -347,17 +348,16 @@ def _esegui(args, verso):
     for t, c, etichetta in colonne:
         print("  %s.%s (%s)" % (t, c, etichetta))
 
-    if not args.si:
-        # Solo in interattivo: l'anteprima mostra valori VERI accanto ai loro
-        # surrogati, e con --si l'uscita finisce quasi sempre in un file di log
-        # dove resterebbero scritti in chiaro. Chi la vuole comunque la chiede
-        # con --righe.
-        if args.righe:
-            stampa.anteprima_righe(motore.anteprima_righe(args.righe, verso), verso)
-        risposta = input("\nprocedere? il database verra' modificato [scrivi 'si']: ")
-    elif args.righe_esplicite:
+    # L'anteprima per righe mostra valori VERI accanto ai loro surrogati. Con
+    # --si l'uscita finisce quasi sempre in un file di log, dove resterebbero
+    # scritti in chiaro: li' si stampa solo se qualcuno l'ha chiesta a mano.
+    if args.righe and (not args.si or args.righe_esplicite):
         stampa.anteprima_righe(motore.anteprima_righe(args.righe, verso), verso)
-        if risposta.strip().lower() not in ("si", "sì"):
+
+    if not args.si:
+        # Nessun predefinito: l'invio non conferma un'operazione che scrive.
+        risposta = input("\nprocedere? il database verra' modificato [y/n]: ")
+        if risposta.strip().lower() not in SI:
             print("annullato: nulla e' stato scritto.")
             return
 
@@ -462,7 +462,7 @@ def _parser():
     for nome, aiuto, funzione in (("cifra", "SCRIVE: applica la policy", cmd_cifra),
                                   ("decifra", "SCRIVE: riporta in chiaro", cmd_decifra)):
         s = comune(nome, aiuto, con_chiave=True)
-        s.add_argument("--si", action="store_true",
+        s.add_argument("--si", "-y", action="store_true",
                        help="salta la conferma interattiva")
         s.add_argument("--su-errore", dest="su_errore",
                        choices=("ferma", "salta"), default="ferma",

@@ -11,9 +11,11 @@ Tre regole di condotta:
 
   * il motore viene ricostruito prima di ogni azione, non tenuto da parte: cosi'
     una policy corretta in un altro terminale vale subito, senza riavviare;
-  * le azioni che scrivono non si confermano con un tasto ma scrivendo `si`.
-    Da un menu numerato, un tasto di troppo e' esattamente il modo in cui si
-    lancia il comando accanto a quello che si voleva;
+  * le domande sono `y`/`n` con il predefinito in maiuscolo ([Y/n], [y/N]), ma
+    le azioni che SCRIVONO non hanno predefinito ([y/n]): l'invio non risponde.
+    Da un menu numerato, un invio di troppo e' esattamente il modo in cui si
+    conferma l'operazione accanto a quella che si voleva, e quelle non si
+    annullano;
   * cio' che non si puo' fare resta visibile e spiega perche', invece di sparire
     dall'elenco: una voce che manca sembra un difetto del programma.
 """
@@ -26,6 +28,7 @@ from sqlalchemy.engine import URL
 from . import config as cfg
 from . import avanzamento as av
 from . import db, diagnosi, keyfile, rilevamento, repo, stampa
+from .stampa import NO, SI
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
 from .registro import Registro
@@ -67,9 +70,26 @@ def _chiedi(domanda, predefinito=None, obbligatorio=True):
         print("  serve una risposta.")
 
 
-def _conferma(domanda):
-    """Conferma esplicita: si scrive `si`, non si preme un tasto."""
-    return input("%s [scrivi 'si']: " % domanda).strip().lower() in ("si", "sì")
+def _conferma(domanda, predefinito=None):
+    """`y`/`n`, con il predefinito in maiuscolo: [Y/n], [y/N], [y/n].
+
+    `predefinito=None` significa nessun predefinito: l'invio non risponde, e la
+    domanda si ripete. E' cio' che si usa per le azioni che scrivono — da un
+    menu numerato, un invio di troppo e' esattamente il modo in cui si conferma
+    un'operazione che non si voleva, e quelle operazioni non si annullano.
+    """
+    etichetta = {True: "[Y/n]", False: "[y/N]", None: "[y/n]"}[predefinito]
+    while True:
+        risposta = input("%s %s: " % (domanda, etichetta)).strip().lower()
+        if not risposta and predefinito is not None:
+            return predefinito
+        if risposta in SI:
+            return True
+        if risposta in NO:
+            return False
+        print("  rispondi y o n%s." % ("" if predefinito is None
+                                       else ", o invio per %s"
+                                       % ("y" if predefinito else "n")))
 
 
 def _pausa():
@@ -151,10 +171,10 @@ def _componi_url():
         # Sui server interni il certificato e' quasi sempre autofirmato, e senza
         # questa risposta la connessione fallisce con un errore che parla di
         # catena di certificati e non di configurazione.
-        if _conferma("il certificato del server e' autofirmato o interno?"):
+        if _conferma("il certificato del server e' autofirmato o interno?", False):
             query["TrustServerCertificate"] = "yes"
     elif driver == "postgresql+psycopg":
-        if _conferma("pretendere una connessione cifrata (sslmode=require)?"):
+        if _conferma("pretendere una connessione cifrata (sslmode=require)?", True):
             query["sslmode"] = "require"
 
     url = URL.create(driver, username=utente, password=password, host=host,
@@ -190,7 +210,7 @@ def _chiedi_connessione():
         url, password = _componi_url()
         if _prova(url if password is None else url.set(password=password)):
             return url, password
-        if not _conferma("\nvuoi correggere i dati e riprovare?"):
+        if not _conferma("\nvuoi correggere i dati e riprovare?", True):
             print("i dati vengono salvati lo stesso: si correggono dal menu, "
                   "voce 'connessione'.")
             return url, password
@@ -428,7 +448,7 @@ def _cifra_una_colonna(config, nome, engine, verso):
         if regola is None:
             return
     elif _conferma("\n%s.%s e' dichiarata '%s'. Vuoi cambiarla?"
-                   % (tabella, colonna, regola.get("strategia"))):
+                   % (tabella, colonna, regola.get("strategia")), False):
         nuova = _applica_strategia(config, nome, m, tabella, colonna,
                                    _decidi_strategia(m, engine, tabella, colonna))
         regola = nuova or regola
@@ -524,7 +544,7 @@ def _azione_scrittura(config, nome, engine, verso):
 def _scegli_tabelle(engine):
     tabelle = db.elenco_tabelle(engine)
     print("\n%d tabelle nel database." % len(tabelle))
-    if not _conferma("vuoi lavorare solo su alcune tabelle?"):
+    if not _conferma("vuoi lavorare solo su alcune tabelle?", False):
         return tabelle
     for t in tabelle:
         print("  %s" % t)
@@ -565,7 +585,7 @@ def _conferma_proposte(proposte):
         for colonna, dati in sorted(proposte[tabella].items()):
             tipo, quanti, esaminati = dati
             if _conferma("  cifrare %s.%s come %s (%d/%d)?"
-                         % (tabella, colonna, tipo, quanti, esaminati)):
+                         % (tabella, colonna, tipo, quanti, esaminati), True):
                 accettate.setdefault(tabella, {})[colonna] = dati
     return accettate
 
@@ -579,7 +599,8 @@ def _azione_policy(config, nome, engine):
               "colonne\nche nel frattempo sono comparse nel database." % destinazione)
         policy = Policy.carica(destinazione)
         tabelle = sorted(policy.tabelle) or _scegli_tabelle(engine)
-        if _conferma("vuoi aggiungere altre tabelle a quelle gia' nella policy?"):
+        if _conferma("vuoi aggiungere altre tabelle a quelle gia' nella policy?",
+                     False):
             tabelle = sorted(set(tabelle) | set(_scegli_tabelle(engine)))
     else:
         policy = Policy()
@@ -596,12 +617,13 @@ def _azione_policy(config, nome, engine):
     if not nuove:
         print("\nnessuna colonna nuova: la policy e' gia' allineata allo schema.")
         rivedi = _conferma("vuoi che guardi i valori delle colonne dichiarate "
-                           "'mantieni' e proponga cosa cifrare?")
+                           "'mantieni' e proponga cosa cifrare?", True)
         if not rivedi:
             return
     elif esistente:
         rivedi = _conferma("\noltre alle %d colonne nuove, vuoi che riguardi "
-                           "anche quelle gia' dichiarate 'mantieni'?" % len(nuove))
+                           "anche quelle gia' dichiarate 'mantieni'?" % len(nuove),
+                           True)
 
     def da_decidere(tabella, colonna):
         regola = policy.regola(tabella, colonna)

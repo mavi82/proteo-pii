@@ -48,6 +48,12 @@ def rapporto(r):
                 print("      ... e altri %d" % (len(c["non_trattabili"]) - 20))
 
 
+# Risposte accettate a una domanda y/n. Stanno qui e non nel menu perche' anche
+# la riga di comando ne ha bisogno, e importare il menu per una conferma
+# significherebbe caricare tutto l'interattivo dentro uno script.
+SI = ("y", "yes", "s", "si", "sì")
+NO = ("n", "no")
+
 LARGHEZZA_CELLA = 20         # per meta' cella: prima, e dopo
 LARGHEZZA_RIGA = 100         # oltre, il terminale va a capo e la tabella muore
 
