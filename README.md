@@ -267,7 +267,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**228 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**235 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -405,6 +405,43 @@ Da riga di comando è `--righe N` (default 30, `--righe 0` per non vederla).
 **Con `--si` non viene mostrata a meno di chiederla esplicitamente**: l'uso da
 script finisce quasi sempre in un file di log, e lì quei valori veri
 resterebbero scritti in chiaro.
+
+### Quando una colonna resta `in_corso`
+
+È il segnale che un'esecuzione non è mai finita, e blocca sia `cifra` sia
+`decifra` su quella colonna. Per uscirne serve una decisione umana, e non è una
+mancanza del programma: **un surrogato è indistinguibile da un valore vero** —
+è il punto di tutto il progetto — quindi nessun controllo automatico può dire
+se quella colonna sia stata scritta o no.
+
+Proteo però dice cosa è successo, e da lì la risposta è quasi sempre ovvia:
+
+```bash
+bin/proteo risolvi
+```
+
+```
+1 colonne in stato 'in_corso' per edw:
+  T_Pazienti.Nome  avviata 2026-08-13T08:00:06  operazione=cifra  elaborati=0/7300
+
+Senza 'ultima_chiave' l'esecuzione era in un'unica transazione: o è passata
+tutta — e allora il registro direbbe 'cifrata' — o il database l'ha annullata,
+e la colonna è rimasta com'era.
+```
+
+Senza `ultima_chiave` la finestra ambigua è di una frazione di secondo (fra il
+commit del database e la scrittura nel registro): se il processo è stato ucciso,
+la transazione è tornata indietro e la colonna è in chiaro. Con `ultima_chiave`
+— cioè scrivendo a lotti — la colonna è **mista**, e va sistemata a mano prima
+di dichiarare qualunque cosa: le righe fino a quella chiave sono trattate, le
+altre no.
+
+```bash
+bin/proteo risolvi --tabella T_Pazienti --colonna Nome --stato in_chiaro
+```
+
+La dichiarazione resta nello storico della voce, così chi guarda dopo vede che
+c'è stato un intervento manuale.
 
 ### Perché durante la cifratura il database sembra bloccato
 

@@ -14,6 +14,7 @@ uno script, e seguono l'ordine in cui vanno usati:
     bozza-policy  allinea la policy allo schema (--rileva riconosce le colonne)
     prova         prova solo la connessione
     stato         cosa risulta al registro
+    risolvi       chiude a mano una colonna rimasta 'in_corso'
     pulisci       elimina le tabelle di appoggio rimaste indietro
     verifica      i cancelli fail-closed, senza toccare nulla
     anteprima     prima/dopo su un campione, senza toccare nulla
@@ -54,7 +55,7 @@ from . import db, diagnosi, keyfile, rilevamento, stampa
 from .stampa import SI
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
-from .registro import Registro
+from .registro import CIFRATA, IN_CHIARO, Registro
 
 __all__ = ["main"]
 
@@ -338,6 +339,58 @@ def cmd_pulisci(args):
         print("  eliminata %s" % tabella)
 
 
+def cmd_risolvi(args):
+    """Chiude a mano una colonna rimasta 'in_corso'.
+
+    Non tocca il database: con la cifratura che preserva il formato nessun
+    controllo automatico puo' dire se quella colonna e' stata scritta o no —
+    un surrogato e' indistinguibile da un valore vero, ed e' il motivo per cui
+    il registro esiste. Qui si dichiara cio' che si e' accertato.
+    """
+    config, voce = _config(args)
+    registro = Registro(_percorso(args, config, voce, "registro") or "registro")
+    database = args.database or voce.get("etichetta") or "database"
+    interrotte = registro.interrotte(database)
+    if not interrotte:
+        print("nessuna colonna in stato 'in_corso' per %s." % database)
+        return
+
+    if not (args.tabella and args.colonna and args.stato):
+        print("%d colonne in stato 'in_corso' per %s:" % (len(interrotte), database))
+        for v in interrotte:
+            print("  %s.%s  avviata %s  operazione=%s  elaborati=%s/%s%s"
+                  % (v["tabella"], v["colonna"], v.get("aggiornato"),
+                     v.get("operazione"), v.get("elaborati", "?"),
+                     v.get("distinti", "?"),
+                     "  ultima_chiave=%s" % v["ultima_chiave"]
+                     if v.get("ultima_chiave") else ""))
+        print("\nSenza 'ultima_chiave' l'esecuzione era in un'unica transazione: "
+              "o e' passata\ntutta — e allora il registro direbbe 'cifrata' — o "
+              "il database l'ha annullata,\ne la colonna e' rimasta com'era. Con "
+              "'ultima_chiave' la colonna e' MISTA e va\nsistemata a mano prima "
+              "di dichiarare qualunque cosa.")
+        print("\nPer dichiararlo:\n  %s risolvi --tabella T --colonna C --stato "
+              "in_chiaro|cifrata" % os.environ.get("PROTEO_PROG", "proteo"))
+        return
+
+    voci = [v for v in interrotte
+            if (v["tabella"], v["colonna"]) == (args.tabella, args.colonna)]
+    if not voci:
+        raise Uscita("%s.%s non risulta in stato 'in_corso'"
+                     % (args.tabella, args.colonna))
+    if not args.si:
+        risposta = input("dichiarare %s.%s '%s'? Sbagliare qui significa cifrare "
+                         "due volte\no non poter piu' decifrare [y/n]: "
+                         % (args.tabella, args.colonna, args.stato))
+        if risposta.strip().lower() not in SI:
+            print("annullato.")
+            return
+    registro.concludi(database, args.tabella, args.colonna, args.stato,
+                      voci[0].get("righe"))
+    print("registro aggiornato: %s.%s -> %s"
+          % (args.tabella, args.colonna, args.stato))
+
+
 def cmd_stato(args):
     config, voce = _config(args)
     engine = _apri(args, config, voce)
@@ -480,6 +533,14 @@ def _parser():
 
     s = comune("stato", "cosa risulta al registro")
     s.set_defaults(func=cmd_stato)
+
+    s = comune("risolvi", "chiude a mano una colonna rimasta 'in_corso'")
+    s.add_argument("--tabella")
+    s.add_argument("--colonna")
+    s.add_argument("--stato", choices=(IN_CHIARO, CIFRATA))
+    s.add_argument("--si", "-y", action="store_true",
+                   help="salta la conferma interattiva")
+    s.set_defaults(func=cmd_risolvi)
 
     s = comune("pulisci", "elimina le tabelle di appoggio rimaste indietro")
     s.add_argument("--schema", help="limita a uno schema")

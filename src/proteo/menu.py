@@ -31,7 +31,7 @@ from . import db, diagnosi, keyfile, rilevamento, repo, stampa
 from .stampa import NO, SI
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
-from .registro import Registro
+from .registro import CIFRATA, IN_CHIARO, Registro
 from .surrogati import ValoreNonTrattabile
 
 __all__ = ["avvia"]
@@ -333,7 +333,109 @@ def _azione_stato(config, nome, engine):
     etichetta = voce.get("etichetta") or nome
     print("\nregistro di %s:" % etichetta)
     stampa.stato(registro.elenco(etichetta), registro.interrotte(etichetta))
-    stampa.orfane(db.mappe_orfane(engine))
+    if engine is None:
+        # `stato` e' l'unica voce che non apre la connessione, di proposito: il
+        # registro sta sul client, e deve restare leggibile anche quando il
+        # database e' irraggiungibile — che e' esattamente il momento in cui lo
+        # si va a guardare.
+        print("\n(le tabelle di appoggio rimaste nel database si cercano con la "
+              "connessione aperta:\n vedile dalla voce 'pulisci')")
+    else:
+        stampa.orfane(db.mappe_orfane(engine))
+
+
+def _azione_pulisci(config, nome, engine):
+    orfane = db.mappe_orfane(engine)
+    if not orfane:
+        print("\nnessuna tabella di appoggio rimasta indietro.")
+        return
+
+    print("\n%d tabelle di appoggio ancora nel database:" % len(orfane))
+    for tabella in orfane:
+        righe, _ = db.conta(engine, tabella)
+        print("  %s  (%d righe: valore vero -> surrogato, IN CHIARO)"
+              % (tabella, righe))
+    print("\nSe una cifratura sta lavorando ADESSO, una di queste e' la sua: "
+          "eliminarla la\nfarebbe fallire. Controlla prima con 'stato'.")
+    if not _conferma("\neliminarle?"):
+        print("annullato.")
+        return
+    for tabella in orfane:
+        db.elimina_mappa(engine, tabella)
+        print("  eliminata %s" % tabella)
+
+
+def _azione_risolvi(config, nome, engine):
+    """Chiude a mano una colonna rimasta 'in_corso'.
+
+    E' l'unica cosa che Proteo non puo' decidere da solo: con la cifratura che
+    preserva il formato, guardando la colonna non si distingue un valore vero da
+    un surrogato, quindi *nessun controllo automatico* puo' dire se quella
+    colonna e' stata scritta o no. Puo' pero' dire cosa e' successo, e da li' la
+    risposta e' quasi sempre ovvia.
+    """
+    voce = config.voce(nome)
+    registro = Registro(config.risolvi(voce, "registro"))
+    etichetta = voce.get("etichetta") or nome
+    interrotte = registro.interrotte(etichetta)
+    if not interrotte:
+        print("\nnessuna colonna in stato 'in_corso': niente da risolvere.")
+        return
+
+    scelte = [("%s.%s" % (v["tabella"], v["colonna"]),
+               "%s.%s — avviata %s" % (v["tabella"], v["colonna"],
+                                       v.get("aggiornato")))
+              for v in interrotte]
+    scelte.append((None, "torna al menu"))
+    quale = _scegli("Quale colonna?", scelte)
+    if quale is None:
+        return
+    voce_reg = [v for v in interrotte
+                if "%s.%s" % (v["tabella"], v["colonna"]) == quale][0]
+    _risolvi_voce(registro, etichetta, voce_reg)
+
+
+def _risolvi_voce(registro, database, voce):
+    tabella, colonna = voce["tabella"], voce["colonna"]
+    ultima = voce.get("ultima_chiave")
+    print("\n%s.%s, avviata il %s (%s)"
+          % (tabella, colonna, voce.get("aggiornato"), voce.get("operazione")))
+
+    if ultima is None:
+        # Senza lotti tutto sta in una transazione: o e' passata tutta, e allora
+        # il registro direbbe 'cifrata', o e' tornata indietro. La finestra in
+        # cui il database ha gia' committato e il registro non ha ancora scritto
+        # e' di una frazione di secondo.
+        print("  L'esecuzione era in un'unica transazione e non risulta "
+              "conclusa:\n  quasi sempre significa che il database l'ha "
+              "annullata, e che la colonna\n  e' rimasta com'era.")
+        print("  Elaborati %s valori su %s prima di fermarsi."
+              % (voce.get("elaborati", "?"), voce.get("distinti", "?")))
+    else:
+        print("  L'esecuzione scriveva A LOTTI, e si e' fermata dopo la chiave "
+              "%s.\n  La colonna e' MISTA: le righe fino a quella chiave sono "
+              "trattate, le altre no." % ultima)
+        print("  Prima di dichiarare qualunque cosa, sistemala a mano — per "
+              "esempio\n  riportando indietro le righe gia' trattate:\n"
+              "    WHERE chiave <= %s" % ultima)
+
+    print("\n  Proteo non puo' verificarlo da solo: un surrogato e' "
+          "indistinguibile\n  da un valore vero, ed e' il motivo per cui il "
+          "registro esiste.")
+    stato = _scegli("Come risulta adesso la colonna?", [
+        (IN_CHIARO, "in chiaro — l'esecuzione non ha scritto (il caso normale)"),
+        (CIFRATA, "cifrata — ha scritto, e il registro non se n'e' accorto"),
+        (None, "lascia com'e'"),
+    ])
+    if stato is None:
+        return
+    if not _conferma("\ndichiarare %s.%s '%s'? Sbagliare qui significa cifrare "
+                     "due volte o\nnon poter piu' decifrare" % (tabella, colonna,
+                                                                stato)):
+        print("annullato.")
+        return
+    registro.concludi(database, tabella, colonna, stato, voce.get("righe"))
+    print("registro aggiornato: %s.%s -> %s" % (tabella, colonna, stato))
 
 
 def _azione_verifica(config, nome, engine, verso="cifra"):
@@ -744,6 +846,8 @@ VOCI = [
     ("decifra",     "DECIFRA — riporta in chiaro, scrive sul database"),
     ("policy",      "policy: creala o aggiornala (riconosce le colonne)"),
     ("chiave",      "genera la chiave"),
+    ("risolvi",     "risolvi una colonna rimasta 'in_corso'"),
+    ("pulisci",     "elimina le tabelle di appoggio rimaste indietro"),
     ("connessione", "connessione: provala o rifalla"),
     ("cambia",      "cambia database"),
     ("esci",        "esci"),
@@ -793,7 +897,11 @@ def avvia(percorso_config=None):
             # La connessione si apre alla prima azione che ne ha bisogno e resta
             # aperta finche' si lavora sullo stesso database: aprirne una nuova a
             # ogni voce di menu significa una password chiesta ogni volta.
-            if scelta != "stato" and (engine is None or aperto_per != nome):
+            # `stato` e `risolvi` leggono solo il registro, che sta sul client:
+            # devono funzionare anche con il database irraggiungibile, che e'
+            # spesso il motivo per cui si e' rimasti a meta'.
+            if scelta not in ("stato", "risolvi") \
+                    and (engine is None or aperto_per != nome):
                 try:
                     engine = db.crea_engine(_password_mancante(config, voce))
                     db.prova_connessione(engine)
@@ -818,6 +926,8 @@ def avvia(percorso_config=None):
                 "anteprima": _azione_anteprima,
                 "policy": _azione_policy,
                 "chiave": _azione_chiave,
+                "risolvi": _azione_risolvi,
+                "pulisci": _azione_pulisci,
                 "cifra": lambda c, n, e: _azione_scrittura(c, n, e, "cifra"),
                 "decifra": lambda c, n, e: _azione_scrittura(c, n, e, "decifra"),
             }[scelta]
