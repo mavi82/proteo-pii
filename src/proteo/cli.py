@@ -321,10 +321,17 @@ def cmd_verifica(args):
 
 
 def cmd_anteprima(args):
-    stampa.anteprima(_motore(args).anteprima(n=args.campione, verso=args.verso))
+    motore = _motore(args)
+    stampa.anteprima(motore.anteprima(n=args.campione, verso=args.verso))
+    if args.righe:
+        stampa.anteprima_righe(motore.anteprima_righe(args.righe, args.verso),
+                               args.verso)
 
 
 def _esegui(args, verso):
+    # `--righe` passato a mano si distingue dal suo valore predefinito: con
+    # --si (uso da script) l'anteprima si stampa solo se qualcuno l'ha chiesta.
+    args.righe_esplicite = any(a.startswith("--righe") for a in sys.argv)
     motore = _motore(args)
 
     if stampa.problemi(motore.verifica(verso)):
@@ -341,7 +348,15 @@ def _esegui(args, verso):
         print("  %s.%s (%s)" % (t, c, etichetta))
 
     if not args.si:
+        # Solo in interattivo: l'anteprima mostra valori VERI accanto ai loro
+        # surrogati, e con --si l'uscita finisce quasi sempre in un file di log
+        # dove resterebbero scritti in chiaro. Chi la vuole comunque la chiede
+        # con --righe.
+        if args.righe:
+            stampa.anteprima_righe(motore.anteprima_righe(args.righe, verso), verso)
         risposta = input("\nprocedere? il database verra' modificato [scrivi 'si']: ")
+    elif args.righe_esplicite:
+        stampa.anteprima_righe(motore.anteprima_righe(args.righe, verso), verso)
         if risposta.strip().lower() not in ("si", "sì"):
             print("annullato: nulla e' stato scritto.")
             return
@@ -437,7 +452,11 @@ def _parser():
     s = comune("anteprima", "prima/dopo su un campione, senza scrivere",
                con_chiave=True)
     s.add_argument("--verso", choices=("cifra", "decifra"), default="cifra")
-    s.add_argument("--campione", type=int, default=8)
+    s.add_argument("--campione", type=int, default=8,
+                   help="valori distinti per colonna (default: 8)")
+    s.add_argument("--righe", type=int, default=30, nargs="?", const=30,
+                   help="prime N righe con prima/dopo (default: 30, 0 per "
+                        "non mostrarle)")
     s.set_defaults(func=cmd_anteprima)
 
     for nome, aiuto, funzione in (("cifra", "SCRIVE: applica la policy", cmd_cifra),
@@ -449,6 +468,10 @@ def _parser():
                        choices=("ferma", "salta"), default="ferma",
                        help="valore malformato: fermarsi (default) o saltarlo "
                             "lasciandolo IN CHIARO")
+        s.add_argument("--righe", type=int, default=30, nargs="?", const=30,
+                       help="prime N righe con prima/dopo prima di confermare "
+                            "(default: 30, 0 per non mostrarle). Con --si sono "
+                            "escluse per difetto: finirebbero in un log")
         s.add_argument("--rapporto", help="scrive il rapporto JSON qui")
         s.set_defaults(func=funzione)
 

@@ -177,6 +177,22 @@ def conta(engine, tabella, colonna=None):
     return righe, distinti
 
 
+def prime_righe(engine, tabella, colonne, quante=30):
+    """Le prime righe della tabella, solo per le colonne indicate.
+
+    Senza `ORDER BY`: ordinare costerebbe quanto scandire la tabella, e qui
+    servono righe *qualsiasi* purche' vere — l'anteprima e' un controllo a
+    occhio, non un campione statistico.
+    """
+    t = _tabella(engine, tabella)
+    scelte = [t.c[c] for c in colonne if c in t.c]
+    if not scelte:
+        return []
+    with engine.connect() as conn:
+        righe = conn.execute(select(*scelte).limit(quante))
+        return [dict(zip([c.name for c in scelte], r)) for r in righe]
+
+
 def campiona(engine, tabella, colonna, quanti=200):
     """Pochi valori non nulli, per capire cosa c'e' dentro la colonna.
 

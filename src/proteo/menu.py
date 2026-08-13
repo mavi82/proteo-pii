@@ -35,6 +35,10 @@ __all__ = ["avvia"]
 
 RIGA = "-" * 72
 
+# Quante righe mostrare prima di scrivere. Trenta stanno in una schermata e
+# bastano a riconoscere una colonna sbagliata.
+RIGHE_ANTEPRIMA = 30
+
 # (driver SQLAlchemy, come si chiama, porta consueta). La porta e' un default,
 # non un vincolo: si puo' sempre scrivere altro.
 MOTORI = [
@@ -328,6 +332,7 @@ def _azione_anteprima(config, nome, engine, verso="cifra"):
         return
     print("\nnessuna scrittura: e' solo un campione.")
     stampa.anteprima(m.anteprima(verso=verso))
+    stampa.anteprima_righe(m.anteprima_righe(RIGHE_ANTEPRIMA, verso), verso)
 
 
 def _stato_colonna(m, tabella, colonna):
@@ -441,6 +446,7 @@ def _cifra_una_colonna(config, nome, engine, verso):
         return
 
     stampa.anteprima(m.anteprima(verso=verso, solo=solo))
+    stampa.anteprima_righe(m.anteprima_righe(RIGHE_ANTEPRIMA, verso, solo), verso)
     if not _conferma("\nprocedere su %s.%s? il database verra' modificato"
                      % (tabella, colonna)):
         print("annullato: nulla e' stato scritto.")
@@ -488,6 +494,9 @@ def _azione_scrittura(config, nome, engine, verso):
     print("\nsto per %s su %s:" % (verso, m.database))
     for t, c, etichetta in colonne:
         print("  %s.%s (%s)" % (t, c, etichetta))
+    # Prima della conferma, non prima del menu: e' l'ultimo momento in cui i
+    # valori veri e i loro surrogati stanno ancora l'uno accanto all'altro.
+    stampa.anteprima_righe(m.anteprima_righe(RIGHE_ANTEPRIMA, verso), verso)
     if not _conferma("\nprocedere? il database verra' modificato"):
         print("annullato: nulla e' stato scritto.")
         return

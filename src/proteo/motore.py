@@ -218,6 +218,62 @@ class Motore:
                             "campione": campione, "non_trattabili": []})
         return out
 
+    def anteprima_righe(self, n=30, verso="cifra", solo=None):
+        """Le prime `n` righe come le vedrebbe chi guarda la tabella.
+
+        L'anteprima per valori distinti risponde alla domanda del motore ("come
+        si trasforma questo valore"); questa risponde a quella di chi conosce i
+        dati ("com'era questo record, e cosa diventa"). Sono la stessa
+        informazione da due parti diverse, e serve la seconda per accorgersi di
+        aver puntato la colonna sbagliata: un valore isolato non dice granche',
+        la riga intera si', perche' ha accanto la chiave e le altre colonne.
+
+        Ritorna [{tabella, chiave, colonne, righe}], dove ogni cella e'
+        (prima, dopo, errore).
+        """
+        scelta = self._scelte(solo)
+        schema = self.schema()
+
+        da_fare = {}
+        for tabella, colonna, regola in self.policy.colonne_da_cifrare():
+            if scelta(tabella, colonna):
+                da_fare.setdefault(tabella, []).append((colonna, regola["tipo"]))
+        if verso == "cifra":
+            for tabella, colonna, _ in self.policy.colonne_da_azzerare():
+                if scelta(tabella, colonna):
+                    da_fare.setdefault(tabella, []).append((colonna, None))
+
+        out = []
+        for tabella, colonne in sorted(da_fare.items()):
+            # La chiave primaria non si tratta, ma si mostra: e' cio' che
+            # permette di riconoscere il record e di andarselo a guardare nel
+            # database vero, se qualcosa non torna.
+            chiave = [c for c in schema["chiavi_primarie"].get(tabella, [])
+                      if c not in {n for n, _ in colonne}]
+            nomi = chiave + [c for c, _ in colonne]
+            righe = []
+            for riga in db.prime_righe(self.engine, tabella, nomi, n):
+                celle = {}
+                for colonna, tipo in colonne:
+                    prima = riga.get(colonna)
+                    if prima is None:
+                        celle[colonna] = (None, None, None)   # NULL resta NULL
+                    elif tipo is None:
+                        celle[colonna] = (prima, None, None)  # azzera
+                    else:
+                        tweak = self.policy.tweak(tabella, colonna)
+                        try:
+                            celle[colonna] = (prima,
+                                              self._trasforma(tipo, prima, tweak,
+                                                              verso), None)
+                        except ValoreNonTrattabile as e:
+                            celle[colonna] = (prima, None, str(e))
+                righe.append({"chiave": {c: riga.get(c) for c in chiave},
+                              "celle": celle})
+            out.append({"tabella": tabella, "chiave": chiave,
+                        "colonne": [c for c, _ in colonne], "righe": righe})
+        return out
+
     # -- esecuzione --------------------------------------------------------- #
     def esegui(self, verso="cifra", su_valore_non_trattabile="ferma",
                avanzamento=None, solo=None):

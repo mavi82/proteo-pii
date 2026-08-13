@@ -240,7 +240,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**168 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**184 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -344,6 +344,40 @@ nome sbagliato, pacchetto Python mancante, credenziali rifiutate, certificato
 autofirmato, host che non si risolve, porta chiusa, firewall. Quando nessuna
 regola scatta non si inventa niente — un suggerimento sbagliato si prova, e fa
 perdere più tempo dell'errore che pretendeva di spiegare.
+
+### Guardare i record prima di scrivere
+
+Prima di ogni conferma, le prime trenta righe come le vedrebbe chi conosce i
+dati — con la chiave primaria accanto, per poterle ritrovare nel database:
+
+```
+clienti — prime 4 righe
+  id | codice_fiscale                      | cognome             | nome
+  ---------------------------------------------------------------------
+  0  | RSSMRA85H12F205Y → QRZSUW98C50X584N | Rossi → Castellani  | Mario → Alberto
+  1  | BNCLGU78T04H501C → KOGWDD55P53M515F | De Luca → Pastore   | Anna → Serena
+  2  | NON-UN-CF  !! non trattabile        | D'Angelo → Agostini | Ludmila  !! non trattabile
+  3  | MRTPLA65M15L219C → RHBLPF31L59C184N | Esposito → Gargano  | Lucia → Primo
+
+  codice_fiscale: codice fiscale di lunghezza o alfabeto errati
+  nome: 'Ludmila' non è fra le 241 voci di nomi.txt
+```
+
+È una vista diversa dall'anteprima per valori distinti, non un duplicato:
+quella risponde alla domanda del motore («come si trasforma questo valore»),
+questa a quella di chi conosce i dati («com'era questo record, cosa diventa»).
+L'errore che solo questa fa vedere è di aver puntato la colonna sbagliata — un
+valore isolato non lo dice, la riga intera sì. E i valori non trattabili
+compaiono qui, prima di scrivere, invece che nel rapporto finale.
+
+Se le colonne sono troppe per una riga di terminale la tabella viene spezzata in
+blocchi, ripetendo la chiave: lasciarla tagliare al terminale renderebbe
+impossibile capire quale valore appartiene a quale colonna.
+
+Da riga di comando è `--righe N` (default 30, `--righe 0` per non vederla).
+**Con `--si` non viene mostrata a meno di chiederla esplicitamente**: l'uso da
+script finisce quasi sempre in un file di log, e lì quei valori veri
+resterebbero scritti in chiaro.
 
 ### Seguire una cifratura lunga
 
