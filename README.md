@@ -240,7 +240,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**152 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**168 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -344,6 +344,49 @@ nome sbagliato, pacchetto Python mancante, credenziali rifiutate, certificato
 autofirmato, host che non si risolve, porta chiusa, firewall. Quando nessuna
 regola scatta non si inventa niente — un suggerimento sbagliato si prova, e fa
 perdere più tempo dell'errore che pretendeva di spiegare.
+
+### Seguire una cifratura lunga
+
+Su una colonna da milioni di valori l'operazione dura minuti o ore, e senza
+niente da guardare non si distingue un lavoro che procede da uno piantato. La
+differenza pratica è che nel dubbio si interrompe — e interrompere a metà lascia
+la colonna in uno stato misto.
+
+```
+cifra grosse.piva (PIVA) — 400,0k righe, 400,0k valori distinti
+  leggo i valori e calcolo i surrogati
+  240,0k/400,0k   60%  33,0k/s  mancano 5s
+  eseguo l'UPDATE sulle righe (istruzione unica)
+  fatto: 400,0k righe aggiornate in 11s
+```
+
+A terminale è una riga che si aggiorna; dentro un file di log diventano righe
+intere ogni trenta secondi, perché una riga che si riscrive su sé stessa in un
+log produce solo spazzatura.
+
+**E se hai chiuso la sessione?** L'avanzamento viene scritto anche nel registro,
+ogni pochi secondi, quindi `stato` risponde da qualunque altro terminale:
+
+```bash
+nohup bin/proteo cifra --si > cifra.log 2>&1 &
+```
+
+```bash
+bin/proteo stato
+```
+
+```
+in_corso  grosse.piva  tipo=PIVA tweak=piva chiave_id=cd03…
+          200,0k/400,0k valori  50%  da 5s  mancano ~5s  leggo i valori e calcolo i surrogati
+```
+
+È anche ciò che distingue i due significati di `in_corso`: un'esecuzione che sta
+lavorando adesso, e una rimasta a metà mesi fa. Se i contatori avanzano fra due
+`stato`, sta lavorando.
+
+L'ultima fase — l'`UPDATE` — è una sola istruzione che tocca tutte le righe:
+lì non c'è più granularità da mostrare, e può durare a lungo. Viene annunciata
+esplicitamente, perché un'attesa muta in quel punto sembra un blocco.
 
 ### Una colonna alla volta
 

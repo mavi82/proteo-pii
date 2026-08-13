@@ -41,6 +41,19 @@ LOTTO_LETTURA = 50_000
 LOTTO_SCRITTURA = 10_000
 
 
+class _Niente:
+    """Avanzamento che non dice niente: evita un `if` a ogni lotto."""
+
+    def fase(self, descrizione):
+        pass
+
+    def avanti(self, elaborati):
+        pass
+
+
+_NIENTE = _Niente()
+
+
 def crea_engine(url, **opzioni):
     """Engine con le opzioni che servono a Proteo, per tutti i punti d'ingresso."""
     u = make_url(url) if isinstance(url, str) else url
@@ -212,7 +225,8 @@ def azzera(engine, tabella, colonna):
                                      .values({colonna: None})).rowcount
 
 
-def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA):
+def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
+                  avanzamento=None):
     """Applica {vecchio: nuovo} con un solo UPDATE. Ritorna le righe toccate.
 
     `coppie` e' un iterabile di (vecchio, nuovo). Il lavoro in tre passi:
@@ -230,7 +244,11 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA):
     di appoggio, cosi' la memoria resta limitata anche con milioni di valori
     distinti. L'UPDATE parte **solo dopo** che la mappa e' completa — applicarla
     a pezzi reintrodurrebbe l'effetto domino descritto sopra.
+
+    `avanzamento` riceve gli eventi: e' l'unico posto da cui si possa dire a che
+    punto siamo, perche' e' qui che il generatore viene davvero consumato.
     """
+    avanzamento = avanzamento or _NIENTE
     md = MetaData()
     t = _tabella(engine, tabella, md)
     schema, _ = dividi_nome(tabella)
@@ -244,6 +262,7 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA):
     )
 
     with engine.begin() as conn:
+        avanzamento.fase("leggo i valori e calcolo i surrogati")
         mappa.create(conn)
         try:
             n_mappate, buffer = 0, []
@@ -253,12 +272,18 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA):
                     conn.execute(insert(mappa), buffer)
                     n_mappate += len(buffer)
                     buffer = []
+                    avanzamento.avanti(n_mappate)
             if buffer:
                 conn.execute(insert(mappa), buffer)
                 n_mappate += len(buffer)
+            avanzamento.avanti(n_mappate)
             if not n_mappate:
                 return 0
 
+            # Una sola istruzione, che tocca tutte le righe: da qui in poi non
+            # c'e' piu' granularita' da mostrare, e puo' durare a lungo. Dirlo
+            # e' l'unico modo perche' un'attesa lunga non sembri un blocco.
+            avanzamento.fase("eseguo l'UPDATE sulle righe (istruzione unica)")
             c = t.c[colonna]
             sub = select(mappa.c.nuovo).where(mappa.c.vecchio == c).scalar_subquery()
             res = conn.execute(

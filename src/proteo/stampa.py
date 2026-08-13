@@ -60,7 +60,39 @@ def stato(voci, interrotte=()):
         print("  %-9s %s.%s  %s  righe=%s  %s"
               % (v.get("stato"), v.get("tabella"), v.get("colonna"), campi,
                  v.get("righe", "-"), v.get("aggiornato")))
+        riga = _avanzamento(v)
+        if riga:
+            print("            %s" % riga)
     if interrotte:
-        print("\n  %d colonne in stato 'in_corso': un'esecuzione non e' mai finita "
-              "e la colonna e' in uno stato misto. Vanno risolte a mano."
+        print("\n  %d colonne in stato 'in_corso': o c'e' un'esecuzione che sta "
+              "lavorando adesso (guarda l'ora qui sopra: se avanza, avanza), "
+              "oppure ne e' rimasta a meta' e la colonna e' in uno stato misto."
               % len(interrotte))
+
+
+def _avanzamento(voce):
+    """Riga di avanzamento per una colonna in corso, se ce n'e' una.
+
+    E' cio' che rende `stato` utile da un'altra sessione: chi ha lanciato la
+    cifratura con `nohup` e ha chiuso il terminale non ha altro modo di sapere
+    se il processo sta ancora lavorando.
+    """
+    from .avanzamento import durata, quantita
+    if voce.get("stato") != "in_corso" or voce.get("elaborati") is None:
+        return None
+
+    elaborati, distinti = voce["elaborati"], voce.get("distinti")
+    pezzi = ["%s/%s valori" % (quantita(elaborati), quantita(distinti))]
+    if distinti:
+        pezzi.append("%d%%" % (100 * elaborati // max(distinti, 1)))
+    iniziato = voce.get("iniziato")
+    if iniziato:
+        import time
+        trascorso = time.time() - iniziato
+        pezzi.append("da %s" % durata(trascorso))
+        if distinti and elaborati and trascorso > 0:
+            velocita = elaborati / trascorso
+            pezzi.append("mancano ~%s" % durata((distinti - elaborati) / velocita))
+    if voce.get("fase"):
+        pezzi.append(voce["fase"])
+    return "  ".join(pezzi)

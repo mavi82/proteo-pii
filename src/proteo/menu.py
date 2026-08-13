@@ -24,6 +24,7 @@ from pathlib import Path
 from sqlalchemy.engine import URL
 
 from . import config as cfg
+from . import avanzamento as av
 from . import db, diagnosi, keyfile, rilevamento, repo, stampa
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
@@ -446,8 +447,9 @@ def _cifra_una_colonna(config, nome, engine, verso):
         return
 
     try:
-        r = m.esegui(verso, progresso=lambda d: print("  %s..." % d, flush=True),
-                     solo=solo)
+        r = m.esegui(verso, solo=solo,
+                     avanzamento=av.Avanzamento(registro=m.registro,
+                                                database=m.database))
     except (VerificaFallita, ValoreNonTrattabile) as e:
         print("\nfermato prima di finire: %s" % e)
         return
@@ -491,7 +493,8 @@ def _azione_scrittura(config, nome, engine, verso):
         return
 
     try:
-        r = m.esegui(verso, progresso=lambda d: print("  %s..." % d, flush=True))
+        r = m.esegui(verso, avanzamento=av.Avanzamento(registro=m.registro,
+                                                       database=m.database))
     except VerificaFallita as e:
         print("\nfermato prima di scrivere:\n%s" % e)
         return

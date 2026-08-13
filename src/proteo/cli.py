@@ -48,6 +48,7 @@ from sqlalchemy.exc import ArgumentError
 from sqlalchemy.engine import make_url
 
 from . import config as cfg
+from . import avanzamento as av
 from . import db, diagnosi, keyfile, rilevamento, stampa
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
@@ -347,7 +348,9 @@ def _esegui(args, verso):
 
     try:
         rapporto = motore.esegui(verso, su_valore_non_trattabile=args.su_errore,
-                                 progresso=lambda d: print("  %s..." % d, flush=True))
+                                 avanzamento=av.Avanzamento(
+                                     registro=motore.registro,
+                                     database=motore.database))
     except VerificaFallita as e:
         raise Uscita(str(e))
 

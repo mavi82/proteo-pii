@@ -219,8 +219,8 @@ class Motore:
         return out
 
     # -- esecuzione --------------------------------------------------------- #
-    def esegui(self, verso="cifra", su_valore_non_trattabile="ferma", progresso=None,
-               solo=None):
+    def esegui(self, verso="cifra", su_valore_non_trattabile="ferma",
+               avanzamento=None, solo=None):
         """Applica la policy. `verso` = 'cifra' | 'decifra'.
 
         su_valore_non_trattabile:
@@ -233,7 +233,13 @@ class Motore:
         lavorare una colonna alla volta — la policy resta il documento completo e
         viene verificata per intero, ma si scrive solo dove si e' deciso di
         scrivere adesso.
+
+        `avanzamento` riceve gli eventi mentre si lavora (vedi
+        `avanzamento.py`): su una colonna da milioni di valori un'esecuzione
+        muta e' indistinguibile da una piantata.
         """
+        from .avanzamento import Silenzioso
+        av = avanzamento or Silenzioso()
         errori = self.errori(verso, solo)
         if errori:
             raise VerificaFallita(errori)
@@ -244,16 +250,24 @@ class Motore:
             if not scelta(tabella, colonna):
                 continue
             tipo, tweak = regola["tipo"], self.policy.tweak(tabella, colonna)
-            if progresso:
-                progresso("%s.%s" % (tabella, colonna))
+
+            # Il conteggio costa una scansione, e su una colonna grande si
+            # sente: si paga perche' senza il totale non esistono ne'
+            # percentuale ne' tempo rimasto, cioe' le due cose che permettono di
+            # decidere se aspettare o annullare.
+            av.fase("conto le righe e i valori distinti")
+            righe_totali, distinti = db.conta(self.engine, tabella, colonna)
+            av.colonna(tabella, colonna, tipo, verso, righe_totali, distinti)
 
             self.registro.avvia(self.database, tabella, colonna, tipo,
                                 tweak.decode(), self.chiave_id, verso,
                                 lista=self._impronta_lista(tipo))
             scarti = []
             coppie = self._coppie(tabella, colonna, tipo, tweak, verso,
-                                  scarti, su_valore_non_trattabile)
-            toccate = db.applica_mappa(self.engine, tabella, colonna, coppie)
+                                  scarti, su_valore_non_trattabile, av)
+            toccate = db.applica_mappa(self.engine, tabella, colonna, coppie,
+                                       avanzamento=av)
+            av.conclusa(toccate)
 
             stato = CIFRATA if verso == "cifra" else IN_CHIARO
             self.registro.concludi(self.database, tabella, colonna, stato, toccate)
@@ -263,10 +277,10 @@ class Motore:
                 "righe_aggiornate": toccate, "non_trattabili": scarti,
             })
 
-        rapporto["colonne"].extend(self._azzera(verso, progresso, scelta))
+        rapporto["colonne"].extend(self._azzera(verso, av, scelta))
         return rapporto
 
-    def _azzera(self, verso, progresso=None, scelta=None):
+    def _azzera(self, verso, av=None, scelta=None):
         """Svuota le colonne dichiarate `azzera`. Solo in cifratura.
 
         In decifratura non si fa nulla: non c'e' nulla da riportare indietro, e
@@ -280,14 +294,17 @@ class Motore:
         for tabella, colonna, _ in self.policy.colonne_da_azzerare():
             if scelta and not scelta(tabella, colonna):
                 continue
-            if progresso:
-                progresso("%s.%s (azzera)" % (tabella, colonna))
+            if av:
+                righe_totali, distinti = db.conta(self.engine, tabella, colonna)
+                av.colonna(tabella, colonna, "azzera", verso, righe_totali, distinti)
             # Passa dal registro come la cifratura: e' l'unica cosa che sappia
             # dire, dopo, perche' quella colonna e' vuota — una colonna svuotata
             # e una colonna sempre stata vuota si somigliano troppo.
             self.registro.avvia(self.database, tabella, colonna,
                                 tipo=None, tweak=None, chiave_id=None, verso="azzera")
             toccate = db.azzera(self.engine, tabella, colonna)
+            if av:
+                av.conclusa(toccate)
             self.registro.concludi(self.database, tabella, colonna, AZZERATA, toccate)
             fatte.append({
                 "operazione": "azzera",
@@ -302,7 +319,8 @@ class Motore:
         return (self.surr.cifra(tipo, v, tweak) if verso == "cifra"
                 else self.surr.decifra(tipo, v, tweak))
 
-    def _coppie(self, tabella, colonna, tipo, tweak, verso, scarti, su_errore):
+    def _coppie(self, tabella, colonna, tipo, tweak, verso, scarti, su_errore,
+                av=None):
         """Generatore (vecchio, nuovo) sui valori distinti.
 
         Generatore e non lista: `applica_mappa` lo consuma riempiendo la tabella
@@ -317,3 +335,8 @@ class Motore:
                     if su_errore == "ferma":
                         raise
                     scarti.append((v, str(e)))
+                    if av:
+                        # Un valore saltato resta in chiaro: e' una fuga di
+                        # dati, e va detta mentre succede, non solo nel rapporto
+                        # finale che nessuno rilegge.
+                        av.scartato(v, str(e))

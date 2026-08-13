@@ -151,6 +151,30 @@ class Registro:
                             tweak=tweak, chiave_id=chiave_id, operazione=verso,
                             lista=lista)
 
+    def avanzamento(self, database, tabella, colonna, **campi):
+        """Aggiorna i contatori di un'operazione in corso, e basta.
+
+        Non passa da `_scrivi` di proposito: quello aggiunge una voce allo
+        storico a ogni chiamata, e l'avanzamento si aggiorna ogni pochi secondi
+        — lo storico si riempirebbe di rumore fino a coprire le due o tre righe
+        che contano davvero.
+
+        Serve a una cosa sola: permettere a un'altra sessione (`stato`) di
+        vedere a che punto e' un processo che gira in background. Se il file non
+        c'e' ancora si lascia perdere, perche' questo metodo non deve poter
+        creare una voce che `avvia` non ha creato.
+        """
+        p = self.percorso(database, tabella, colonna)
+        if not p.exists():
+            return None
+        voce = json.loads(p.read_text(encoding="utf-8"))
+        voce.update(campi)
+        voce["aggiornato"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(voce, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(p)
+        return voce
+
     def concludi(self, database, tabella, colonna, stato, righe):
         v = self.leggi(database, tabella, colonna)
         if v is None:
