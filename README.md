@@ -267,7 +267,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**239 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**250 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -547,6 +547,60 @@ quindi vengono cercate invece di aspettare che qualcuno le noti. Con una
 transazione andata a buon fine non ne resta nessuna; ne sopravvive una solo se
 il processo è stato ucciso su un motore dove il `CREATE TABLE` non è
 transazionale (MySQL, SQLite).
+
+### Quando la sessione SSH cade
+
+Due problemi diversi, e due risposte diverse.
+
+**Il processo muore con la sessione.** `--sfondo` lo stacca dal terminale — è
+`nohup` fatto dal programma, così non c'è da ricordarselo:
+
+```bash
+bin/proteo cifra --sfondo
+```
+
+```
+cifra: 1 colonne su Grande
+  grosse.piva (PIVA)
+
+procedere? il database verra' modificato [y/n]: y
+avviato in sottofondo: pid 19118
+  log:     tail -f proteo-cifra.log
+  stato:   proteo stato
+
+Puoi chiudere la sessione: il processo continua.
+```
+
+La conferma resta in primo piano: ciò che scrive non parte senza che qualcuno
+abbia risposto. Poi si segue da qualsiasi altra sessione con `stato`, o dal log.
+
+**Riprendere ciò che si era interrotto.** Possibile solo scrivendo a lotti,
+perché è lì che il registro sa l'ultima chiave committata:
+
+```bash
+bin/proteo cifra --lotto-righe 1000 --sfondo
+```
+
+```bash
+bin/proteo riprendi
+```
+
+```
+riprendo T_Pazienti.Nome dalla chiave 184000 (184000 righe gia' fatte il 2026-08-13T08:00)
+```
+
+Riprendere legge i valori distinti **solo dalle righe non ancora trattate** e
+scrive solo su quelle: rileggere le altre significherebbe cifrare il cifrato, e
+da lì non si torna indietro. Il risultato è identico a quello di una corsa mai
+interrotta — c'è un test che confronta le due cose riga per riga, perché se
+questa proprietà si rompe non produce un errore ma un dato corrotto in silenzio.
+
+Il menu lo propone da sé: se una colonna è rimasta a metà, prima di chiedere
+qualunque altra cosa dice dov'era arrivata e offre di continuare.
+
+Senza lotti non c'è niente da riprendere, e non è una mancanza: in transazione
+unica o l'esecuzione è passata tutta, o il database l'ha annullata. Non esiste
+un "a metà" da cui ripartire — lo dice `risolvi`.
 
 ### Seguire una cifratura lunga
 

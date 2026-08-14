@@ -216,7 +216,8 @@ def campiona(engine, tabella, colonna, quanti=200):
                 conn.execute(select(c).where(c.is_not(None)).limit(quanti))]
 
 
-def leggi_distinti(engine, tabella, colonna, lotto=LOTTO_LETTURA):
+def leggi_distinti(engine, tabella, colonna, lotto=LOTTO_LETTURA,
+                   chiave=None, da=None):
     """Genera i valori distinti non nulli, a lotti, senza caricarli tutti.
 
     `stream_results` evita che il driver materializzi l'intero risultato: su una
@@ -226,6 +227,11 @@ def leggi_distinti(engine, tabella, colonna, lotto=LOTTO_LETTURA):
     t = _tabella(engine, tabella)
     c = t.c[colonna]
     stmt = select(c).where(c.is_not(None)).distinct()
+    if chiave is not None and da is not None:
+        # Riprendendo, la colonna e' MISTA: le righe fino a `da` contengono gia'
+        # surrogati. Leggerle insieme alle altre significherebbe cifrare il
+        # cifrato — la cosa che il registro esiste per impedire.
+        stmt = stmt.where(t.c[chiave] > da)
     with engine.connect().execution_options(stream_results=True, yield_per=lotto) as conn:
         for blocco in conn.execute(stmt).partitions(lotto):
             yield [r[0] for r in blocco]
@@ -366,7 +372,7 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
 
 def applica_mappa_a_lotti(engine, tabella, colonna, coppie, chiave,
                           lotto_righe=LOTTO_RIGHE, lotto=LOTTO_SCRITTURA,
-                          avanzamento=None, su_lotto=None):
+                          avanzamento=None, su_lotto=None, da_chiave=None):
     """Come `applica_mappa`, ma scrivendo a lotti di righe. Meno lock, meno atomicita'.
 
     ## Perche' a lotti PER CHIAVE e non per valore
@@ -413,7 +419,9 @@ def applica_mappa_a_lotti(engine, tabella, colonna, coppie, chiave,
     pk = t.c[chiave]
     c = t.c[colonna]
     sub = select(mappa.c.nuovo).where(mappa.c.vecchio == c).scalar_subquery()
-    toccate, ultima = 0, None
+    # `da_chiave` = si riprende da li': le righe precedenti sono gia' trattate
+    # e non vanno toccate una seconda volta.
+    toccate, ultima = 0, da_chiave
     try:
         # denominatore = le righe della tabella: da qui in poi si contano
         # quelle, non piu' i valori distinti

@@ -14,6 +14,7 @@ uno script, e seguono l'ordine in cui vanno usati:
     bozza-policy  allinea la policy allo schema (--rileva riconosce le colonne)
     prova         prova solo la connessione
     stato         cosa risulta al registro
+    riprendi      continua una cifratura interrotta, da dove si era fermata
     risolvi       chiude a mano una colonna rimasta 'in_corso'
     ripristino    riallinea il registro dopo un ripristino del database
     pulisci       elimina le tabelle di appoggio rimaste indietro
@@ -392,6 +393,36 @@ def cmd_risolvi(args):
           % (args.tabella, args.colonna, args.stato))
 
 
+def _in_sottofondo(args):
+    """Rilancia se stesso staccato dal terminale. Ritorna True se ha delegato.
+
+    Una sessione SSH che cade porta con se' il processo, e su una cifratura di
+    ore succede. `setsid` + reindirizzamento su file e' esattamente cio' che si
+    farebbe a mano con nohup: farlo qui evita di doverselo ricordare, e
+    soprattutto evita di scoprirlo dopo.
+
+    La conferma resta in primo piano: cio' che scrive non deve poter partire
+    senza che qualcuno abbia risposto.
+    """
+    import subprocess
+    registro_log = Path(args.log or "proteo-%s.log" % args.comando).expanduser()
+    argomenti = [a for a in sys.argv[1:] if a not in ("--sfondo", "--log")
+                 and a != args.log]
+    if "-y" not in argomenti and "--si" not in argomenti:
+        argomenti.append("-y")
+
+    with open(registro_log, "a", encoding="utf-8") as f:
+        processo = subprocess.Popen(
+            [sys.executable, "-m", "proteo.cli"] + argomenti,
+            stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True)          # niente SIGHUP quando cade la ssh
+    print("avviato in sottofondo: pid %d" % processo.pid)
+    print("  log:     tail -f %s" % registro_log)
+    print("  stato:   %s stato" % os.environ.get("PROTEO_PROG", "proteo"))
+    print("\nPuoi chiudere la sessione: il processo continua.")
+    return True
+
+
 def cmd_ripristino(args):
     """Riallinea il registro dopo un ripristino del database da un backup.
 
@@ -466,12 +497,15 @@ def _esegui(args, verso):
     if stampa.problemi(motore.verifica(verso)):
         raise Uscita("la verifica ha trovato errori bloccanti: nulla e' stato scritto.")
 
-    colonne = [(t, c, r["tipo"]) for t, c, r in motore.policy.colonne_da_cifrare()]
+    solo = getattr(args, "solo_colonna", None)
+    colonne = [(t, c, r["tipo"]) for t, c, r in motore.policy.colonne_da_cifrare()
+               if solo is None or (t, c) == solo]
     if verso == "cifra":
         # elencate insieme e marcate: l'azzeramento e' l'unica cosa in questo
         # elenco che nessuna chiave annulla, e va vista prima di rispondere 'si'.
         colonne += [(t, c, "AZZERA, irreversibile")
-                    for t, c, _ in motore.policy.colonne_da_azzerare()]
+                    for t, c, _ in motore.policy.colonne_da_azzerare()
+                    if solo is None]
     print("\n%s: %d colonne su %s" % (verso, len(colonne), motore.database))
     for t, c, etichetta in colonne:
         print("  %s.%s (%s)" % (t, c, etichetta))
@@ -489,8 +523,15 @@ def _esegui(args, verso):
             print("annullato: nulla e' stato scritto.")
             return
 
+    # Dopo la conferma, non prima: chi delega al sottofondo ha gia' risposto.
+    if getattr(args, "sfondo", False):
+        _in_sottofondo(args)
+        return
+
     try:
         rapporto = motore.esegui(verso, su_valore_non_trattabile=args.su_errore,
+                                 riprendi=getattr(args, "voce_ripresa", None),
+                                 solo=[solo] if solo else None,
                                  avanzamento=av.Avanzamento(
                                      registro=motore.registro,
                                      database=motore.database))
@@ -504,6 +545,43 @@ def _esegui(args, verso):
         Path(args.rapporto).write_text(
             json.dumps(rapporto, indent=2, ensure_ascii=False), encoding="utf-8")
         print("\nrapporto in %s" % args.rapporto)
+
+
+def cmd_riprendi(args):
+    """Continua una cifratura interrotta, dall'ultima chiave committata."""
+    motore = _motore(args)
+    riprendibili = motore.riprendibili(args.verso)
+    if not riprendibili:
+        interrotte = motore.registro.interrotte(motore.database)
+        if interrotte:
+            raise Uscita(
+                "ci sono %d colonne 'in_corso', ma nessuna e' riprendibile: "
+                "l'esecuzione\nnon scriveva a lotti, quindi o e' passata tutta o "
+                "e' tornata indietro. Usa 'risolvi'." % len(interrotte))
+        print("niente da riprendere: nessuna esecuzione interrotta.")
+        return
+
+    voce = riprendibili[0]
+    if len(riprendibili) > 1 and not (args.tabella and args.colonna):
+        print("%d colonne riprendibili:" % len(riprendibili))
+        for v in riprendibili:
+            print("  %s.%s  ferma a %s = %s  (%s righe fatte)"
+                  % (v["tabella"], v["colonna"], "chiave", v["ultima_chiave"],
+                     v.get("righe", "?")))
+        raise Uscita("scegline una con --tabella e --colonna")
+    if args.tabella and args.colonna:
+        scelte = [v for v in riprendibili
+                  if (v["tabella"], v["colonna"]) == (args.tabella, args.colonna)]
+        if not scelte:
+            raise Uscita("%s.%s non e' riprendibile" % (args.tabella, args.colonna))
+        voce = scelte[0]
+
+    print("riprendo %s.%s dalla chiave %s (%s righe gia' fatte il %s)"
+          % (voce["tabella"], voce["colonna"], voce["ultima_chiave"],
+             voce.get("righe", "?"), voce.get("aggiornato")))
+    args.voce_ripresa = voce
+    args.solo_colonna = (voce["tabella"], voce["colonna"])
+    _esegui(args, args.verso)
 
 
 def cmd_cifra(args):
@@ -607,6 +685,21 @@ def _parser():
                         "non mostrarle)")
     s.set_defaults(func=cmd_anteprima)
 
+    s = comune("riprendi", "continua una cifratura interrotta", con_chiave=True)
+    s.add_argument("--verso", choices=("cifra", "decifra"), default="cifra")
+    s.add_argument("--tabella")
+    s.add_argument("--colonna")
+    s.add_argument("--si", "-y", action="store_true")
+    s.add_argument("--sfondo", action="store_true",
+                   help="stacca dal terminale: sopravvive alla sessione ssh")
+    s.add_argument("--log", help="dove scrivere in sottofondo")
+    s.add_argument("--su-errore", dest="su_errore",
+                   choices=("ferma", "salta"), default="ferma")
+    s.add_argument("--righe", type=int, default=0)
+    s.add_argument("--rapporto")
+    s.add_argument("--lotto-righe", dest="lotto_righe", type=int)
+    s.set_defaults(func=cmd_riprendi)
+
     for nome, aiuto, funzione in (("cifra", "SCRIVE: applica la policy", cmd_cifra),
                                   ("decifra", "SCRIVE: riporta in chiaro", cmd_decifra)):
         s = comune(nome, aiuto, con_chiave=True)
@@ -624,6 +717,11 @@ def _parser():
                        help="prime N righe con prima/dopo prima di confermare "
                             "(default: 30, 0 per non mostrarle). Con --si sono "
                             "escluse per difetto: finirebbero in un log")
+        s.add_argument("--sfondo", action="store_true",
+                       help="stacca dal terminale: sopravvive alla sessione ssh, "
+                            "e si segue con 'stato' o dal log")
+        s.add_argument("--log", help="dove scrivere quando gira in sottofondo "
+                                     "(default: ./proteo-cifra.log)")
         s.add_argument("--rapporto", help="scrive il rapporto JSON qui")
         s.set_defaults(func=funzione)
 

@@ -588,6 +588,34 @@ def _applica_strategia(config, nome, m, tabella, colonna, scelta):
     return regola
 
 
+def _riprendi(config, nome, engine, verso, voce):
+    """Continua dalla chiave registrata, senza ritoccare cio' che e' gia' fatto."""
+    m = _motore(config, nome, engine)
+    if m is None:
+        return
+    solo = [(voce["tabella"], voce["colonna"])]
+    print("\ncontrollo prima di scrivere...")
+    problemi = [p for p in m.verifica(verso, solo)
+                if not (p.livello == "errore" and "in_corso" in p.messaggio)]
+    if stampa.problemi(problemi):
+        print("\nci sono errori bloccanti: nulla e' stato scritto.")
+        return
+    if not _conferma("\nriprendere %s.%s dalla chiave %s? il database verra' "
+                     "modificato" % (voce["tabella"], voce["colonna"],
+                                     voce["ultima_chiave"])):
+        print("annullato: nulla e' stato scritto.")
+        return
+    try:
+        r = m.esegui(verso, solo=solo, riprendi=voce,
+                     avanzamento=av.Avanzamento(registro=m.registro,
+                                                database=m.database))
+    except (VerificaFallita, ValoreNonTrattabile) as e:
+        print("\nfermato prima di finire: %s" % e)
+        return
+    print("\nfatto.")
+    stampa.rapporto(r)
+
+
 def _cifra_una_colonna(config, nome, engine, verso):
     """Una colonna alla volta: si sceglie, si decide, si guarda, si scrive."""
     m = _motore(config, nome, engine)
@@ -648,6 +676,21 @@ def _cifra_una_colonna(config, nome, engine, verso):
 
 
 def _azione_scrittura(config, nome, engine, verso):
+    # Una ripresa possibile va offerta PRIMA delle altre strade: se si ricomincia
+    # da capo, la meta' gia' trattata verrebbe cifrata due volta, e da li' non si
+    # torna indietro. E' il cancello del registro a impedirlo, ma meglio dirlo
+    # qui, dove si sta ancora scegliendo.
+    m = _motore(config, nome, engine)
+    if m is not None:
+        riprendibili = m.riprendibili(verso)
+        if riprendibili:
+            v = riprendibili[0]
+            print("\n%s.%s e' rimasta a meta': %s righe fatte, ferma alla chiave "
+                  "%s (%s)." % (v["tabella"], v["colonna"], v.get("righe", "?"),
+                                v["ultima_chiave"], v.get("aggiornato")))
+            if _conferma("riprendere da li'?", True):
+                return _riprendi(config, nome, engine, verso, v)
+
     scelta = _scegli("Come vuoi procedere?", [
         ("una",   "una colonna alla volta (guidato)"),
         ("tutto", "tutto quello che la policy dichiara"),

@@ -279,8 +279,50 @@ class Motore:
         return out
 
     # -- esecuzione --------------------------------------------------------- #
+    def riprendibili(self, verso="cifra"):
+        """Colonne che si possono riprendere da dove si erano fermate.
+
+        Solo quelle interrotte mentre scrivevano **a lotti**: li' il registro
+        sa l'ultima chiave committata, quindi si sa cosa e' gia' trattato. Senza
+        lotti l'esecuzione era in un'unica transazione, e non c'e' niente da
+        riprendere — o e' passata tutta, o e' tornata indietro.
+        """
+        fuori = []
+        for voce in self.registro.interrotte(self.database):
+            if voce.get("ultima_chiave") is None:
+                continue
+            if voce.get("operazione") != verso:
+                continue
+            regola = self.policy.regola(voce["tabella"], voce["colonna"]) or {}
+            if regola.get("strategia") != "cifra":
+                continue
+            fuori.append(voce)
+        return fuori
+
+    def _da_dove(self, tabella, verso, riprendi):
+        """Chiave da cui ripartire per questa colonna, o None."""
+        if not riprendi:
+            return None
+        voce = riprendi
+        chiave = self._chiave_primaria(tabella)
+        if not chiave:
+            return None
+        # Il registro salva la chiave come testo: qui torna al tipo della
+        # colonna, altrimenti il confronto `>` fallisce o — peggio — confronta
+        # numeri come stringhe, e '9' > '10'.
+        tipo = self.schema()["tabelle"][tabella][chiave]["tipo"].upper()
+        grezza = voce["ultima_chiave"]
+        try:
+            return int(grezza) if any(x in tipo for x in ("INT", "SERIAL")) \
+                else grezza
+        except (TypeError, ValueError):
+            raise VerificaFallita([Problema(
+                "errore", "%s.%s" % (tabella, voce["colonna"]),
+                "l'ultima chiave registrata (%r) non e' leggibile come %s: "
+                "riprendere non e' sicuro, va risolta a mano." % (grezza, tipo))])
+
     def esegui(self, verso="cifra", su_valore_non_trattabile="ferma",
-               avanzamento=None, solo=None):
+               avanzamento=None, solo=None, riprendi=None):
         """Applica la policy. `verso` = 'cifra' | 'decifra'.
 
         su_valore_non_trattabile:
@@ -301,15 +343,21 @@ class Motore:
         from .avanzamento import Silenzioso
         av = avanzamento or Silenzioso()
         try:
-            return self._esegui(verso, su_valore_non_trattabile, av, solo)
+            return self._esegui(verso, su_valore_non_trattabile, av, solo,
+                                riprendi)
         finally:
             # Il battito e' un thread: va fermato anche se l'esecuzione e'
             # fallita a meta', altrimenti continua a scrivere sopra i messaggi
             # d'errore.
             av.chiudi()
 
-    def _esegui(self, verso, su_valore_non_trattabile, av, solo):
-        errori = self.errori(verso, solo)
+    def _esegui(self, verso, su_valore_non_trattabile, av, solo, riprendi=None):
+        # Riprendendo, lo stato 'in_corso' di QUELLA colonna non e' un errore:
+        # e' il punto di partenza. Tutti gli altri controlli restano.
+        errori = [e for e in self.errori(verso, solo)
+                  if not (riprendi and "in_corso" in e.messaggio
+                          and e.dove == "%s.%s" % (riprendi["tabella"],
+                                                   riprendi["colonna"]))]
         if errori:
             raise VerificaFallita(errori)
 
@@ -330,13 +378,18 @@ class Motore:
             righe_totali, distinti = db.conta(self.engine, tabella, colonna)
             av.totali(righe_totali, distinti)
 
-            self.registro.avvia(self.database, tabella, colonna, tipo,
-                                tweak.decode(), self.chiave_id, verso,
-                                lista=self._impronta_lista(tipo))
+            da = self._da_dove(tabella, verso, riprendi)
+            if da is not None:
+                av.fase("riprendo da %s = %s"
+                        % (self._chiave_primaria(tabella), da))
+            else:
+                self.registro.avvia(self.database, tabella, colonna, tipo,
+                                    tweak.decode(), self.chiave_id, verso,
+                                    lista=self._impronta_lista(tipo))
             scarti = []
             coppie = self._coppie(tabella, colonna, tipo, tweak, verso,
-                                  scarti, su_valore_non_trattabile, av)
-            toccate = self._scrivi(tabella, colonna, coppie, av)
+                                  scarti, su_valore_non_trattabile, av, da)
+            toccate = self._scrivi(tabella, colonna, coppie, av, da)
             av.conclusa(toccate)
 
             stato = CIFRATA if verso == "cifra" else IN_CHIARO
@@ -350,7 +403,7 @@ class Motore:
         rapporto["colonne"].extend(self._azzera(verso, av, scelta))
         return rapporto
 
-    def _scrivi(self, tabella, colonna, coppie, av):
+    def _scrivi(self, tabella, colonna, coppie, av, da=None):
         """Una transazione sola, o a lotti di righe. La differenza e' il lock.
 
         A transazione unica l'operazione e' atomica ma tiene bloccate le righe
@@ -372,7 +425,8 @@ class Motore:
 
         return db.applica_mappa_a_lotti(
             self.engine, tabella, colonna, coppie, chiave,
-            lotto_righe=self.lotto_righe, avanzamento=av, su_lotto=segna)
+            lotto_righe=self.lotto_righe, avanzamento=av, su_lotto=segna,
+            da_chiave=da)
 
     def _chiave_primaria(self, tabella):
         """La chiave primaria, se e' una sola colonna.
@@ -435,7 +489,7 @@ class Motore:
     PASSO_AVANZAMENTO = 256
 
     def _coppie(self, tabella, colonna, tipo, tweak, verso, scarti, su_errore,
-                av=None):
+                av=None, da=None):
         """Generatore (vecchio, nuovo) sui valori distinti.
 
         Generatore e non lista: `applica_mappa` lo consuma riempiendo la tabella
@@ -443,7 +497,12 @@ class Motore:
         distinti.
         """
         fatti = 0
-        for blocco in db.leggi_distinti(self.engine, tabella, colonna):
+        # Riprendendo si leggono solo le righe non ancora trattate: le altre
+        # contengono gia' surrogati, e rileggerle significherebbe cifrare il
+        # cifrato.
+        for blocco in db.leggi_distinti(self.engine, tabella, colonna,
+                                        chiave=self._chiave_primaria(tabella),
+                                        da=da):
             for v in blocco:
                 fatti += 1
                 if av and fatti % self.PASSO_AVANZAMENTO == 0:
