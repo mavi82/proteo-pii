@@ -33,7 +33,12 @@ from sqlalchemy import (Column, MetaData, Table, Unicode, create_engine,
                        delete, func, insert, inspect, select, text, update)
 from sqlalchemy.engine import make_url
 
-__all__ = ["crea_engine", "prova_connessione", "anomalie_url",
+class ScritturaSenzaEffetto(RuntimeError):
+    """L'UPDATE e' andato a buon fine e non ha cambiato niente."""
+
+
+__all__ = ["ScritturaSenzaEffetto", "crea_engine", "prova_connessione",
+           "anomalie_url",
            "elenco_tabelle", "introspeziona", "conta", "leggi_distinti",
            "applica_mappa", "applica_mappa_a_lotti", "azzera", "dividi_nome",
            "mappe_orfane", "elimina_mappa"]
@@ -444,7 +449,8 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
             res = conn.execute(
                 update(t).values({colonna: sub})
                          .where(c.in_(select(mappa.c.vecchio))))
-            toccate = res.rowcount
+            toccate = _controlla_scrittura(conn, t, c, mappa, res.rowcount,
+                                           n_mappate)
         except BaseException:
             # BaseException e non Exception: un Ctrl-C arriva come
             # KeyboardInterrupt, ed e' proprio il caso da cui ci si vuole
@@ -480,6 +486,14 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
         except Exception:                                   # noqa: BLE001
             # La connessione e' gia' caduta: il server annullera' da solo. Non
             # deve coprire l'errore che ci ha portati fin qui.
+            pass
+        # Il rollback non basta a far sparire la tabella di appoggio dove il
+        # DDL non e' transazionale, e quella tabella contiene la mappa in
+        # chiaro: si prova a toglierla anche da fuori, con una connessione
+        # nuova. Se non riesce nemmeno cosi', la trova `mappe_orfane`.
+        try:
+            elimina_mappa(engine, _qualifica(schema, mappa.name))
+        except Exception:                                   # noqa: BLE001
             pass
         raise
     finally:
@@ -565,6 +579,10 @@ def applica_mappa_a_lotti(engine, tabella, colonna, coppie, chiave,
             if su_lotto:
                 su_lotto(ultima, toccate)
             avanzamento.avanti(toccate)
+        # A lotti il controllo si fa alla fine: un singolo lotto senza righe
+        # corrispondenti e' normale, un'intera colonna no.
+        with engine.begin() as conn:
+            toccate = _controlla_scrittura(conn, t, c, mappa, toccate, n_mappate)
     finally:
         try:
             with engine.begin() as conn:
@@ -573,6 +591,42 @@ def applica_mappa_a_lotti(engine, tabella, colonna, coppie, chiave,
         except Exception:                                   # noqa: BLE001
             pass          # resta su disco: la trova `mappe_orfane`
     return toccate
+
+
+def _controlla_scrittura(conn, t, colonna, mappa, toccate, n_mappate):
+    """Zero righe toccate con una mappa piena e' un guasto, non un risultato.
+
+    E' successo davvero, e nel modo peggiore: la colonna e' rimasta in chiaro,
+    l'esecuzione e' finita senza errori e il registro ha segnato 'cifrata'. Da
+    fuori sembrava tutto a posto — ed e' il tipo di silenzio che questo progetto
+    non puo' permettersi, perche' chi lo scopre lo scopre quando i dati sono
+    gia' usciti.
+
+    La causa tipica e' un confronto che non confronta: tipo o collazione
+    diversi fra la mappa e la colonna. Il conteggio si paga solo quando il
+    driver non ha saputo dire quante righe ha toccato, o ha detto zero.
+    """
+    if toccate and toccate > 0:
+        return toccate
+    if not n_mappate:
+        return 0
+
+    corrispondenti = conn.execute(
+        select(func.count()).select_from(t)
+        .where(colonna.in_(select(mappa.c.vecchio)))).scalar_one()
+    if corrispondenti == 0:
+        raise ScritturaSenzaEffetto(
+            "l'UPDATE non ha toccato nessuna riga, ma la mappa ne conteneva %d: "
+            "nessun valore della colonna corrisponde a quelli letti.\n"
+            "  Di solito significa che il confronto non confronta davvero — "
+            "tipo o collazione diversi fra la tabella di appoggio e la colonna "
+            "(il caso classico e' VARCHAR contro NVARCHAR, dove gli accenti "
+            "diventano '?').\n"
+            "  La colonna NON e' stata modificata, e non viene segnata come "
+            "trattata." % n_mappate)
+    # Il driver non sapeva dire quante righe: le contiamo noi, invece di
+    # scrivere `None` nel registro e non sapere piu' cosa e' successo.
+    return corrispondenti
 
 
 def _confine(conn, pk, ultima, quante):

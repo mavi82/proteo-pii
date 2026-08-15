@@ -162,3 +162,60 @@ class StatoDopoUnInterruzione(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ScritturaSenzaEffetto(unittest.TestCase):
+    """Zero righe toccate con una mappa piena e' un guasto, non un risultato.
+
+    E' successo su SQL Server per un tipo sbagliato nella tabella di appoggio:
+    la colonna era rimasta in chiaro, l'esecuzione era finita senza errori e il
+    registro aveva segnato 'cifrata'. Da fuori sembrava tutto a posto.
+    """
+
+    def setUp(self):
+        self.engine = _db()
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def test_una_mappa_che_non_corrisponde_a_niente_si_ferma(self):
+        with self.assertRaises(db.ScritturaSenzaEffetto) as e:
+            db.applica_mappa(self.engine, "clienti", "cf",
+                             [("VALORE-CHE-NON-C-E", "ALTRO")])
+        self.assertIn("non confronta", str(e.exception))
+
+    def test_e_non_scrive_niente(self):
+        with self.assertRaises(db.ScritturaSenzaEffetto):
+            db.applica_mappa(self.engine, "clienti", "cf",
+                             [("VALORE-CHE-NON-C-E", "ALTRO")])
+        self.assertEqual(_valori(self.engine), CF)
+        # la mappa in chiaro non deve restare su disco nemmeno fallendo
+        self.assertEqual(db.mappe_orfane(self.engine), [])
+
+    def test_una_colonna_intatta_non_risulta_cifrata(self):
+        """Il punto: 'cifrata' deve voler dire che qualcosa e' stato cifrato.
+
+        Se ogni valore viene saltato non cambia niente, e segnarla 'cifrata'
+        bloccherebbe il tentativo successivo autorizzando per giunta una
+        decifratura su valori mai cifrati.
+        """
+        reg = Registro(Path(tempfile.mkdtemp()) / "r")
+        p = Policy({"clienti": {"id": {"strategia": "mantieni"},
+                                "cf": {"strategia": "cifra", "tipo": "CF"}}})
+        with self.engine.begin() as c:
+            c.execute(text("UPDATE clienti SET cf = 'NON-UN-CF'"))
+        r = Motore(self.engine, p, CHIAVE, "k0", reg, "DB").esegui(
+            "cifra", su_valore_non_trattabile="salta")
+        self.assertEqual(r["colonne"][0]["righe_aggiornate"], 0)
+        self.assertEqual(reg.stato("DB", "clienti", "cf"), "in_chiaro")
+
+    def test_una_mappa_vuota_resta_lecita(self):
+        """Nessun valore da trattare non e' un guasto: e' una colonna vuota."""
+        self.assertEqual(db.applica_mappa(self.engine, "clienti", "cf", []), 0)
+
+    def test_a_lotti_vale_lo_stesso_controllo(self):
+        with self.assertRaises(db.ScritturaSenzaEffetto):
+            db.applica_mappa_a_lotti(self.engine, "clienti", "cf",
+                                     [("VALORE-CHE-NON-C-E", "ALTRO")], "id",
+                                     lotto_righe=2)
+        self.assertEqual(_valori(self.engine), CF)

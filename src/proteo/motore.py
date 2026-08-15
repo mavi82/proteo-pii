@@ -433,7 +433,11 @@ class Motore:
             toccate = self._scrivi(tabella, colonna, coppie, av, da)
             av.conclusa(toccate)
 
-            stato = CIFRATA if verso == "cifra" else IN_CHIARO
+            # Zero righe toccate significa che la colonna e' rimasta com'era:
+            # segnarla 'cifrata' sarebbe una bugia, e per giunta una bugia che
+            # blocca il tentativo successivo e autorizza una decifratura su
+            # valori mai cifrati.
+            stato = CIFRATA if (verso == "cifra" and toccate) else IN_CHIARO
             self.registro.concludi(self.database, tabella, colonna, stato, toccate)
             rapporto["colonne"].append({
                 "operazione": "cifra",
