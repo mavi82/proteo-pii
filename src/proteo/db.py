@@ -39,6 +39,13 @@ __all__ = ["crea_engine", "prova_connessione", "anomalie_url",
            "mappe_orfane", "elimina_mappa"]
 
 LOTTO_LETTURA = 50_000
+
+# pyodbc alloca un buffer per riga e per colonna quando gli si chiede
+# `fetchmany(N)`: con una NVARCHAR larga e N=50.000 sono centinaia di MB, e il
+# processo sembra piantato mentre sta solo allocando. Trenta round-trip in piu'
+# non si notano; un'allocazione da mezzo giga si'.
+LOTTO_LETTURA_PYODBC = 1_000
+
 LOTTO_SCRITTURA = 10_000
 
 # Le tabelle di appoggio si riconoscono dal nome: e' cio' che permette di
@@ -122,9 +129,41 @@ def _qualifica(schema, nome):
     return "%s.%s" % (schema, nome) if schema else nome
 
 
+# Una tabella riflessa una volta resta riflessa: la riflessione interroga le
+# viste di sistema, e quelle sono la cosa che NON si puo' interrogare mentre e'
+# aperta una transazione che ha appena fatto un CREATE TABLE.
+_RIFLESSE = {}
+
+
 def _tabella(engine, qualificato, metadata=None):
+    """Descrizione della tabella, riflessa una sola volta per engine.
+
+    ## Perche' la cache non e' un'ottimizzazione
+
+    Su SQL Server un `CREATE TABLE` dentro una transazione aperta tiene dei lock
+    sui metadati, e blocca le interrogazioni alle viste di sistema fatte da
+    altre sessioni. La tabella di appoggio viene creata cosi', e il generatore
+    che legge i valori distinti veniva consumato *dentro* quella transazione:
+    se avesse dovuto riflettere la tabella in quel momento, avrebbe interrogato
+    le viste di sistema da una seconda connessione — bloccata dalla prima, che a
+    sua volta aspettava il generatore.
+
+    Un'attesa circolare che nessuno dei due lati puo' sciogliere, e che a video
+    appariva come "in attesa della prima risposta del database", per sempre.
+    Riflettere una volta sola, prima, la rende impossibile.
+
+    Su SQLite e PostgreSQL non si vedeva: le loro letture dei metadati non si
+    bloccano allo stesso modo.
+    """
     schema, nome = dividi_nome(qualificato)
-    return Table(nome, metadata or MetaData(), autoload_with=engine, schema=schema)
+    if metadata is not None:
+        return Table(nome, metadata, autoload_with=engine, schema=schema)
+
+    md = _RIFLESSE.setdefault(engine, MetaData())
+    chiave = "%s.%s" % (schema, nome) if schema else nome
+    if chiave not in md.tables:
+        Table(nome, md, autoload_with=engine, schema=schema)
+    return md.tables[chiave]
 
 
 # --------------------------------------------------------------------------- #
@@ -226,6 +265,8 @@ def leggi_distinti(engine, tabella, colonna, lotto=LOTTO_LETTURA,
     """
     t = _tabella(engine, tabella)
     c = t.c[colonna]
+    if engine.dialect.driver == "pyodbc":
+        lotto = min(lotto, LOTTO_LETTURA_PYODBC)
     stmt = select(c).where(c.is_not(None)).distinct()
     if chiave is not None and da is not None:
         # Riprendendo, la colonna e' MISTA: le righe fino a `da` contengono gia'
@@ -307,10 +348,11 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
     punto siamo, perche' e' qui che il generatore viene davvero consumato.
     """
     avanzamento = avanzamento or _NIENTE
-    md = MetaData()
-    t = _tabella(engine, tabella, md)
+    # La tabella si riflette qui, fuori da ogni transazione e una volta sola:
+    # dentro sarebbe un'attesa circolare senza uscita. Vedi `_tabella`.
+    t = _tabella(engine, tabella)
     schema, _ = dividi_nome(tabella)
-    mappa = _tabella_mappa(md, schema)
+    mappa = _tabella_mappa(MetaData(), schema)
 
     # Tutto in UNA transazione, ed e' una scelta con un prezzo: le righe della
     # tabella restano bloccate dall'inizio del calcolo fino alla fine
@@ -402,10 +444,11 @@ def applica_mappa_a_lotti(engine, tabella, colonna, coppie, chiave,
     ritrova, `pulisci` la elimina.
     """
     avanzamento = avanzamento or _NIENTE
-    md = MetaData()
-    t = _tabella(engine, tabella, md)
+    # La tabella si riflette qui, fuori da ogni transazione e una volta sola:
+    # dentro sarebbe un'attesa circolare senza uscita. Vedi `_tabella`.
+    t = _tabella(engine, tabella)
     schema, _ = dividi_nome(tabella)
-    mappa = _tabella_mappa(md, schema)
+    mappa = _tabella_mappa(MetaData(), schema)
 
     with engine.begin() as conn:
         avanzamento.fase("leggo i valori e calcolo i surrogati", contabile=True)
