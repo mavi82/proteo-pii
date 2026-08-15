@@ -362,7 +362,8 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
     # ogni volta che il processo muore.
     fallita = False
     with engine.begin() as conn:
-        avanzamento.fase("leggo i valori e calcolo i surrogati", contabile=True)
+        avanzamento.fase("scrivo la mappa nella tabella di appoggio",
+                         contabile=True, totale=None)
         mappa.create(conn)
         try:
             n_mappate = _riempi(conn, mappa, coppie, lotto, avanzamento)
@@ -451,7 +452,8 @@ def applica_mappa_a_lotti(engine, tabella, colonna, coppie, chiave,
     mappa = _tabella_mappa(MetaData(), schema)
 
     with engine.begin() as conn:
-        avanzamento.fase("leggo i valori e calcolo i surrogati", contabile=True)
+        avanzamento.fase("scrivo la mappa nella tabella di appoggio",
+                         contabile=True, totale=None)
         mappa.create(conn)
         n_mappate = _riempi(conn, mappa, coppie, lotto, avanzamento)
     if not n_mappate:

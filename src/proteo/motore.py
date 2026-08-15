@@ -387,8 +387,24 @@ class Motore:
                                     tweak.decode(), self.chiave_id, verso,
                                     lista=self._impronta_lista(tipo))
             scarti = []
-            coppie = self._coppie(tabella, colonna, tipo, tweak, verso,
-                                  scarti, su_valore_non_trattabile, av, da)
+            # La lettura si completa PRIMA di aprire la transazione di
+            # scrittura, e questo `list()` e' la ragione per cui esiste questo
+            # commento.
+            #
+            # Passando il generatore, la lettura avveniva dentro la transazione
+            # che aveva appena creato la tabella di appoggio, e da un'altra
+            # connessione. Su SQL Server questo si blocca — indefinitamente — e
+            # non c'e' modo di distinguerlo da un database lento. Leggere prima
+            # rende la situazione impossibile invece che improbabile: mentre si
+            # scrive non c'e' nessun'altra connessione aperta.
+            #
+            # Il prezzo e' la memoria: i valori distinti stanno tutti in RAM
+            # (~40 MB per due milioni di codici fiscali). Su un dominio
+            # enormemente piu' grande e' il limite da rivedere per primo.
+            av.fase("leggo i valori e calcolo i surrogati", contabile=True,
+                    totale=distinti)
+            coppie = list(self._coppie(tabella, colonna, tipo, tweak, verso,
+                                       scarti, su_valore_non_trattabile, av, da))
             toccate = self._scrivi(tabella, colonna, coppie, av, da)
             av.conclusa(toccate)
 

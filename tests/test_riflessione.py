@@ -59,7 +59,7 @@ class Cache(unittest.TestCase):
         self.assertIsNot(t, db._tabella(self.engine, "t"))
 
 
-class NienteRiflessioneATransazioneAperta(unittest.TestCase):
+class NienteAltreConnessioniATransazioneAperta(unittest.TestCase):
     """Il controllo che vale per tutti i motori, anche dove non si vedrebbe."""
 
     def setUp(self):
@@ -84,17 +84,37 @@ class NienteRiflessioneATransazioneAperta(unittest.TestCase):
         db._RIFLESSE.pop(self.engine, None)
         self.engine.dispose()
 
-    def test_applica_mappa_non_riflette_dopo_aver_creato_la_tabella(self):
-        def coppie():
-            # il generatore legge: e' il punto in cui la riflessione tardiva
-            # avveniva, dentro la transazione che ha appena creato la mappa
-            for blocco in db.leggi_distinti(self.engine, "t", "v"):
-                for v in blocco:
-                    yield v, "Z"
-
-        db.applica_mappa(self.engine, "t", "v", coppie())
+    def test_niente_metadati_durante_la_transazione(self):
+        db.applica_mappa(self.engine, "t", "v", [("A", "Z")])
         self.assertEqual(self.dentro, [],
                          "riflessione dei metadati durante la transazione")
+
+    def test_il_motore_legge_tutto_prima_di_aprire_la_transazione(self):
+        """La proprieta' strutturale: mentre si scrive non ci deve essere
+        nessun'altra connessione aperta. Su SQL Server, leggere da una seconda
+        connessione mentre la prima ha appena creato una tabella si blocca —
+        indefinitamente, e in modo indistinguibile da un database lento."""
+        import tempfile
+        from proteo.motore import Motore
+        from proteo.policy import Policy
+        from proteo.registro import Registro
+
+        letture = []
+
+        @event.listens_for(self.engine, "before_cursor_execute")
+        def spia_letture(conn, cursore, istruzione, parametri, contesto, molte):
+            if self.aperta and istruzione.lower().lstrip().startswith("select") \
+                    and db.PREFISSO_MAPPA not in istruzione.lower():
+                letture.append(istruzione)
+
+        p = Policy({"t": {"id": {"strategia": "mantieni"},
+                          "v": {"strategia": "cifra", "tipo": "NOME"}}})
+        with self.engine.begin() as c:
+            c.execute(text("UPDATE t SET v = 'Mario'"))
+        Motore(self.engine, p, bytes(range(32)), "k0",
+               Registro(Path(tempfile.mkdtemp()) / "r"), "DB").esegui("cifra")
+        self.assertEqual(letture, [],
+                         "lettura da un'altra connessione a transazione aperta")
 
     def test_il_risultato_resta_corretto(self):
         def coppie():
