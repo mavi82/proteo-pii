@@ -48,6 +48,12 @@ LOTTO_LETTURA_PYODBC = 1_000
 
 LOTTO_SCRITTURA = 10_000
 
+# FreeTDS non regge gli stessi lotti del driver Microsoft: un executemany da
+# diecimila righe puo' far cadere la connessione ("Unexpected EOF from the
+# server") invece di dare un errore. Mille righe per volta sono trenta
+# round-trip in piu' e nessuna sorpresa.
+LOTTO_SCRITTURA_FREETDS = 1_000
+
 # Le tabelle di appoggio si riconoscono dal nome: e' cio' che permette di
 # ritrovarne una rimasta indietro dopo un processo ucciso.
 PREFISSO_MAPPA = "_proteo_map_"
@@ -317,6 +323,8 @@ def _tabella_mappa(md, schema):
 
 def _riempi(conn, mappa, coppie, lotto, avanzamento):
     """Versa le coppie nella tabella di appoggio. Ritorna quante ne ha scritte."""
+    if _e_freetds(conn.engine.url):
+        lotto = min(lotto, LOTTO_SCRITTURA_FREETDS)
     n_mappate, buffer = 0, []
     for vecchio, nuovo in coppie:
         buffer.append({"vecchio": vecchio, "nuovo": nuovo})
@@ -369,7 +377,14 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
     # appoggio fuori dalla transazione — lascerebbe su disco la mappa in chiaro
     # ogni volta che il processo muore.
     fallita = False
-    with engine.begin() as conn:
+    # Transazione governata a mano invece che con `engine.begin()`, per un
+    # motivo solo: se la connessione muore, il ROLLBACK dell'uscita fallisce a
+    # sua volta, e l'eccezione del rollback SOSTITUISCE quella originale. Si
+    # resta con "Unexpected EOF from the server (SQLEndTran)" — che dice come e'
+    # finita, mai perche' e' cominciata. Qui l'errore vero sopravvive sempre.
+    conn = engine.connect()
+    transazione = conn.begin()
+    try:
         avanzamento.fase("scrivo la mappa nella tabella di appoggio",
                          contabile=True, totale=None)
         mappa.create(conn)
@@ -418,6 +433,17 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
             except Exception:                               # noqa: BLE001
                 if not fallita:
                     raise
+        transazione.commit()
+    except BaseException:
+        try:
+            transazione.rollback()
+        except Exception:                                   # noqa: BLE001
+            # La connessione e' gia' caduta: il server annullera' da solo. Non
+            # deve coprire l'errore che ci ha portati fin qui.
+            pass
+        raise
+    finally:
+        conn.close()
     return toccate
 
 

@@ -67,6 +67,56 @@ class Rollback(unittest.TestCase):
         self.assertIn("l'errore vero", str(e.exception))
 
 
+class ErroreVero(unittest.TestCase):
+    """Cio' che ha fatto fallire non deve essere coperto da cio' che segue."""
+
+    def test_un_rollback_fallito_non_copre_l_errore_originale(self):
+        """Se la connessione muore, anche il ROLLBACK fallisce — e la sua
+        eccezione prenderebbe il posto di quella che spiega cosa e' successo.
+        Si resterebbe con 'Unexpected EOF (SQLEndTran)', che dice come e'
+        finita e mai perche' e' cominciata."""
+        engine = _db()
+
+        def coppie():
+            yield CF[0], "AAAAAA00A00A000A"
+            raise ValueError("l'errore vero")
+
+        rotture = []
+
+        class TransazioneRotta:
+            """Simula una connessione caduta: il rollback fallisce."""
+            def __init__(self, dietro):
+                self.dietro = dietro
+
+            def commit(self):
+                self.dietro.commit()
+
+            def rollback(self):
+                rotture.append(True)
+                raise RuntimeError("Unexpected EOF from the server (SQLEndTran)")
+
+        vero_connect = engine.connect
+
+        def connect_finto(*a, **k):
+            conn = vero_connect(*a, **k)
+            vero_begin = conn.begin
+
+            def begin_finto():
+                return TransazioneRotta(vero_begin())
+            conn.begin = begin_finto
+            return conn
+
+        engine.connect = connect_finto
+        try:
+            with self.assertRaises(ValueError) as e:
+                db.applica_mappa(engine, "clienti", "cf", coppie())
+            self.assertIn("l'errore vero", str(e.exception))
+            self.assertTrue(rotture, "il rollback non e' stato nemmeno tentato")
+        finally:
+            engine.connect = vero_connect
+            engine.dispose()
+
+
 class MappeOrfane(unittest.TestCase):
     """La tabella di appoggio non deve sopravvivere. Se succede, si trova."""
 
