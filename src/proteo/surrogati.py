@@ -343,9 +343,10 @@ class Surrogatore:
         ci si fermava, e su una colonna vera significava fermarsi su decine di
         valori — cioe' non trattarla affatto.
 
-        Il ripiego conserva la forma (lunghezza, spazi, trattini, maiuscole) e
-        cifra solo le lettere: il risultato non e' un nome plausibile, ma e'
-        reversibile, deterministico e biiettivo come tutto il resto.
+        Il ripiego conserva la forma — lunghezza, spazi, trattini, maiuscole, e
+        le cifre esattamente com'erano — e permuta le lettere: il risultato e'
+        una parola pronunciabile, reversibile, deterministica e biiettiva come
+        tutto il resto.
 
         **Il cycle-walking non e' un dettaglio.** Il risultato viene ricifrato
         finche' non cade fuori dalla lista: se un valore fuori lista producesse
@@ -403,19 +404,16 @@ class Surrogatore:
         prodotto di tutte le posizioni, e diventa piccolo solo per parole di due
         lettere o meno.
         """
+        # Le cifre restano dove sono e come sono. In un nome un numero non e'
+        # un dato personale: e' un contrassegno tecnico — `paz2`, un progressivo
+        # per disambiguare due omonimi, il residuo di un'importazione. Cifrarlo
+        # toglie a chi lavora sui dati l'unico appiglio per ritrovare quel
+        # record, e non protegge nessuno: `2` non identifica nessuno.
+        #
+        # Restano distinti anche i valori che differiscono solo per il numero
+        # (`paz2` e `paz3` danno surrogati diversi), quindi la corrispondenza
+        # biunivoca regge come prima.
         fuori = list(valore)
-
-        # cifre: gruppo a parte, come prima. `Nome-paz2` deve restare distinto
-        # da `Nome-paz3`.
-        pos_cifre = [i for i, ch in enumerate(valore) if ch in _CIFRE]
-        if len(pos_cifre) >= 2:
-            s = "".join(valore[i] for i in pos_cifre)
-            etichetta = tweak + b"|fuori|cifre"
-            s2 = (self.ff1.encrypt_str(s, _CIFRE, etichetta) if avanti
-                  else self.ff1.decrypt_str(s, _CIFRE, etichetta))
-            for i, ch in zip(pos_cifre, s2):
-                fuori[i] = ch
-
         pos = [i for i, ch in enumerate(valore) if ch.upper() in _LETTERE]
         parola = "".join(valore[i].upper() for i in pos)
         unita = _unita(parola)
@@ -425,13 +423,15 @@ class Surrogatore:
             dominio *= d
 
         if dominio < DOMINIO_MINIMO:
-            nuovo = "".join(fuori)
-            if nuovo == valore:
+            # Niente da cifrare: cio' che resta uscirebbe identico, cioe' in
+            # chiaro, ed e' l'unico esito che non si puo' accettare in silenzio.
+            if not pos:
                 raise ValoreNonTrattabile(
-                    "%r e' troppo corto per essere cifrato: le sue lettere danno "
-                    "%d combinazioni, sotto il minimo di %d"
-                    % (valore, dominio, DOMINIO_MINIMO))
-            return nuovo
+                    "%r non contiene lettere da cifrare" % valore)
+            raise ValoreNonTrattabile(
+                "%r e' troppo corto per essere cifrato: le sue lettere danno "
+                "%d combinazioni, sotto il minimo di %d"
+                % (valore, dominio, DOMINIO_MINIMO))
 
         indice = 0
         for (tipo, pezzo), d in zip(unita, domini):
@@ -480,8 +480,9 @@ class Surrogatore:
     # 2, e deve fermarsi invece di restituire un valore diverso dall'originale.
     #
     #   1  lettere cifrate come un blocco unico sull'alfabeto intero
-    #   2  scheletro consonante/vocale conservato (vedi `_mescola`)
-    VERSIONE_RIPIEGO = 2
+    #   2  unita' pronunciabili conservate (vedi `_mescola`)
+    #   3  le cifre restano com'erano: in un nome non sono un dato personale
+    VERSIONE_RIPIEGO = 3
 
     def cifra(self, tipo, valore, tweak):
         return self._TIPI[tipo](self, valore, tweak, True)

@@ -92,9 +92,16 @@ un altro gruppo con liquida, una nasale più occlusiva (`mb`, `nt`) resta tale.
 Così ciò che esce si legge:
 
 ```
-Zambetta  → Kontollo     Crivelli → Glatissa    Cantone  → Dembosi
-Granitto  → Drulakki     Cichetti → Yochunnu    Capri    → Kegro
+Zambetta  → Kontollo     Crivelli → Glatissa    Cantone     → Dembosi
+Granitto  → Drulakki     Cichetti → Yochunnu    Bianchi1974 → Miumdxo1974
 ```
+
+**Le cifre restano dove sono e come sono.** In un nome un numero non è un dato
+personale: è un contrassegno tecnico — `paz2`, un progressivo per disambiguare
+due omonimi, il residuo di un'importazione. Cifrarlo toglierebbe a chi lavora
+sui dati l'unico appiglio per ritrovare quel record, e non proteggerebbe
+nessuno: `2` non identifica nessuno. Valori che differiscono solo per il numero
+restano comunque distinti, quindi la corrispondenza resta biunivoca.
 
 Cifrare le lettere e basta darebbe `Francesco → Nfuwxibzu`: corretto,
 reversibile, e inservibile — su una colonna di cognomi, dove i valori fuori
@@ -284,7 +291,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**298 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**303 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 

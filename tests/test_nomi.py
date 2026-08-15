@@ -303,3 +303,44 @@ class GruppiLegali(unittest.TestCase):
             surrogato = self._fuori(valore)
             self.assertEqual(_forma(surrogato.upper()), _forma(valore.upper()),
                              "%s -> %s" % (valore, surrogato))
+
+
+class CifreIntatte(unittest.TestCase):
+    """In un nome un numero non e' un dato personale: e' un contrassegno."""
+
+    def setUp(self):
+        self.s = Surrogatore(CHIAVE)
+
+    def _fuori(self, valore):
+        surrogato = self.s.cifra("COGNOME", valore, TW)
+        self.assertEqual(self.s.decifra("COGNOME", surrogato, TW), valore)
+        return surrogato
+
+    def _cifre(self, testo):
+        return "".join(c for c in testo if c.isdigit())
+
+    def test_le_cifre_restano_identiche(self):
+        for valore in ("Cognome-paz2", "Bianchi1974", "Rossi 2", "Paz-12",
+                       "De Luca 3bis"):
+            surrogato = self._fuori(valore)
+            self.assertEqual(self._cifre(surrogato), self._cifre(valore),
+                             "%s -> %s" % (valore, surrogato))
+
+    def test_e_restano_al_loro_posto(self):
+        surrogato = self._fuori("Bianchi1974")
+        self.assertTrue(surrogato.endswith("1974"))
+
+    def test_valori_che_differiscono_solo_per_il_numero_restano_distinti(self):
+        """La corrispondenza deve restare biunivoca anche cosi'."""
+        self.assertNotEqual(self._fuori("Cognome-paz2"), self._fuori("Cognome-paz3"))
+
+    def test_le_lettere_cambiano_lo_stesso(self):
+        surrogato = self._fuori("Cognome-paz2")
+        self.assertNotIn("Cognome", surrogato)
+        self.assertNotIn("paz", surrogato)
+
+    def test_un_valore_di_soli_numeri_non_e_trattabile(self):
+        """Non c'e' niente da cifrare: uscirebbe identico, cioe' in chiaro."""
+        with self.assertRaises(ValoreNonTrattabile) as e:
+            self.s.cifra("COGNOME", "12345", TW)
+        self.assertIn("non contiene lettere", str(e.exception))
