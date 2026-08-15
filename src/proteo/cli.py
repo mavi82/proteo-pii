@@ -78,6 +78,10 @@ class Uscita(SystemExit):
         # messaggio d'errore comparirebbe *prima* dell'elenco dei problemi che
         # lo spiega, e si leggerebbe al contrario.
         sys.stdout.flush()
+        # Anche nel diario: un comando che si e' rifiutato di partire e' la
+        # cosa che si va a cercare rileggendo, e senza questa riga il diario
+        # finirebbe con un "fine" che sembra tutto a posto.
+        _DIARIO.riga("rifiutato: %s", " ".join(str(messaggio).split()))
         print("errore: %s" % messaggio, file=sys.stderr)
         super().__init__(2)
 

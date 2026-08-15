@@ -156,6 +156,22 @@ class NienteValoriVeri(unittest.TestCase):
         self.assertIn("conclusa: 3 righe", testo)
 
 
+class ComandiRifiutati(unittest.TestCase):
+    """Un comando che non parte e' la cosa che si va a cercare rileggendo."""
+
+    def test_l_uscita_finisce_nel_diario(self):
+        from proteo import cli
+        p = _percorso()
+        vecchio, cli._DIARIO = cli._DIARIO, diario.apri(p)
+        try:
+            with self.assertRaises(SystemExit):
+                raise cli.Uscita("gia' cifrata: non si cifra due volte")
+        finally:
+            cli._DIARIO.chiudi()
+            cli._DIARIO = vecchio
+        self.assertIn("rifiutato: gia' cifrata", p.read_text(encoding="utf-8"))
+
+
 class Intestazione(unittest.TestCase):
     def test_dice_versioni_e_opzioni(self):
         """E' la prima cosa che si chiede a chi segnala un problema, e la piu'
