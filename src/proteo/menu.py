@@ -668,9 +668,11 @@ def _cifra_una_colonna(config, nome, engine, verso):
         r = m.esegui(verso, solo=solo,
                      avanzamento=av.Avanzamento(registro=m.registro,
                                                 database=m.database))
-    except (VerificaFallita, ValoreNonTrattabile) as e:
+    except VerificaFallita as e:
         print("\nfermato prima di finire: %s" % e)
         return
+    except ValoreNonTrattabile as e:
+        return _non_trattabili(m, verso, e, solo)
     print("\nfatto.")
     stampa.rapporto(r)
 
@@ -735,15 +737,54 @@ def _azione_scrittura(config, nome, engine, verso):
         print("\nfermato prima di scrivere:\n%s" % e)
         return
     except ValoreNonTrattabile as e:
-        # Il default e' 'ferma'. Il menu non offre 'salta': lascerebbe valori in
-        # chiaro, ed e' una decisione che va presa a mente fredda modificando la
-        # policy, non scegliendo una voce mentre si guarda un errore.
-        print("\nfermato su un valore malformato: %s\n"
-              "  La colonna non e' stata modificata. Correggi il valore nel "
-              "database, oppure usa la riga di comando con --su-errore salta se "
-              "vuoi lasciarlo IN CHIARO." % e)
+        return _non_trattabili(m, verso, e)
+
+    print("\nfatto.")
+    stampa.rapporto(r)
+
+
+def _non_trattabili(m, verso, errore, solo=None):
+    """Un valore malformato ha fermato l'esecuzione: si decide con l'elenco davanti.
+
+    Saltarli significa lasciarli **in chiaro**, ed e' una fuga di dati: la
+    scelta non si offre alla cieca su un valore solo, ma dopo aver guardato
+    quanti sono e quali. La colonna intanto non e' stata toccata — la lettura
+    finisce prima che la scrittura cominci.
+    """
+    print("\nfermato su un valore che non so trattare: %s" % errore)
+    print("La colonna NON e' stata modificata.")
+    if not _conferma("\nvuoi vedere tutti i valori nella stessa condizione?", True):
         return
 
+    colonne = solo or [(t, c) for t, c, _ in m.policy.colonne_da_cifrare()]
+    tutti = []
+    for tabella, colonna in colonne:
+        scarti = m.non_trattabili(tabella, colonna, verso)
+        for valore, motivo in scarti:
+            tutti.append((tabella, colonna, valore, motivo))
+        print("\n%s.%s: %d valori non trattabili" % (tabella, colonna, len(scarti)))
+        for valore, motivo in scarti[:30]:
+            print("    %-30r %s" % (valore, motivo))
+        if len(scarti) > 30:
+            print("    ... e altri %d" % (len(scarti) - 30))
+    if not tutti:
+        return
+
+    print("\nDue strade, e nessuna e' indolore:")
+    print("  * correggerli nel database (il modo pulito), e rilanciare;")
+    print("  * saltarli: la colonna viene trattata, ma questi valori RESTANO IN")
+    print("    CHIARO — cioe' quei record restano riconoscibili.")
+    if not _conferma("\nsaltarli e procedere, lasciandoli in chiaro?"):
+        print("annullato: nulla e' stato scritto.")
+        return
+
+    try:
+        r = m.esegui(verso, su_valore_non_trattabile="salta", solo=solo,
+                     avanzamento=av.Avanzamento(registro=m.registro,
+                                                database=m.database))
+    except VerificaFallita as e:
+        print("\nfermato prima di scrivere:\n%s" % e)
+        return
     print("\nfatto.")
     stampa.rapporto(r)
 

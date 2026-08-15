@@ -198,6 +198,24 @@ class ValoriSporchi(unittest.TestCase):
         with self.assertRaises(ValoreNonTrattabile):
             self.m.esegui("cifra")
 
+    def test_fermarsi_in_lettura_non_lascia_la_colonna_bloccata(self):
+        """Il valore malformato si trova leggendo, senza aver toccato una riga:
+        segnare 'in_corso' li' costringerebbe a un intervento manuale per
+        un'esecuzione che non ha scritto niente."""
+        from proteo.surrogati import ValoreNonTrattabile
+        with self.assertRaises(ValoreNonTrattabile):
+            self.m.esegui("cifra")
+        self.assertEqual(self.reg.interrotte("ProvaDB"), [])
+        self.assertEqual(self.reg.stato("ProvaDB", "clienti", "codice_fiscale"),
+                         IN_CHIARO)
+
+    def test_e_il_secondo_tentativo_parte_lo_stesso(self):
+        from proteo.surrogati import ValoreNonTrattabile
+        with self.assertRaises(ValoreNonTrattabile):
+            self.m.esegui("cifra")
+        r = self.m.esegui("cifra", su_valore_non_trattabile="salta")
+        self.assertEqual(r["colonne"][0]["non_trattabili"][0][0], "NON-UN-CF")
+
     def test_salta_lascia_il_valore_in_chiaro_e_lo_riporta(self):
         r = self.m.esegui("cifra", su_valore_non_trattabile="salta")
         scarti = r["colonne"][0]["non_trattabili"]

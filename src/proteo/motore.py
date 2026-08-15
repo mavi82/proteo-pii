@@ -278,6 +278,23 @@ class Motore:
                         "colonne": [c for c, _ in colonne], "righe": righe})
         return out
 
+    def non_trattabili(self, tabella, colonna, verso="cifra", av=None):
+        """Tutti i valori che non si sanno trattare, con il motivo. Non scrive.
+
+        L'anteprima ne mostra solo quelli del campione: su una colonna vera il
+        valore malformato e' quasi sempre piu' in fondo, e l'esecuzione si ferma
+        su di lui dopo aver letto tutto. Qui si guarda l'intera colonna, cosi'
+        la decisione — fermarsi o saltarli lasciandoli in chiaro — si prende
+        avendo l'elenco sotto gli occhi invece di un valore solo.
+        """
+        regola = self.policy.regola(tabella, colonna) or {}
+        tweak = self.policy.tweak(tabella, colonna)
+        scarti = []
+        for _ in self._coppie(tabella, colonna, regola.get("tipo"), tweak, verso,
+                              scarti, "salta", av):
+            pass
+        return scarti
+
     # -- esecuzione --------------------------------------------------------- #
     def riprendibili(self, verso="cifra"):
         """Colonne che si possono riprendere da dove si erano fermate.
@@ -382,10 +399,6 @@ class Motore:
             if da is not None:
                 av.fase("riprendo da %s = %s"
                         % (self._chiave_primaria(tabella), da))
-            else:
-                self.registro.avvia(self.database, tabella, colonna, tipo,
-                                    tweak.decode(), self.chiave_id, verso,
-                                    lista=self._impronta_lista(tipo))
             scarti = []
             # La lettura si completa PRIMA di aprire la transazione di
             # scrittura, e questo `list()` e' la ragione per cui esiste questo
@@ -405,6 +418,18 @@ class Motore:
                     totale=distinti)
             coppie = list(self._coppie(tabella, colonna, tipo, tweak, verso,
                                        scarti, su_valore_non_trattabile, av, da))
+
+            # Il registro si segna 'in_corso' SOLO ORA, quando la lettura e'
+            # finita e sta per cominciare la scrittura. Segnarlo prima
+            # significava che un valore malformato — trovato leggendo, senza
+            # aver toccato una riga — lasciava la colonna bloccata: e per
+            # sbloccarla serviva un intervento a mano, per un'esecuzione che
+            # non aveva scritto niente. 'in_corso' deve voler dire una cosa
+            # sola: la scrittura e' cominciata e non e' finita.
+            if da is None:
+                self.registro.avvia(self.database, tabella, colonna, tipo,
+                                    tweak.decode(), self.chiave_id, verso,
+                                    lista=self._impronta_lista(tipo))
             toccate = self._scrivi(tabella, colonna, coppie, av, da)
             av.conclusa(toccate)
 
