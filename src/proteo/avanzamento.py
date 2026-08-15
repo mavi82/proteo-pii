@@ -35,6 +35,7 @@ principale e' fermo dentro una chiamata al database.
     tre che sopravvive alla chiusura del terminale.
 """
 
+import os
 import sys
 import threading
 import time
@@ -43,6 +44,10 @@ __all__ = ["Avanzamento", "Silenzioso", "durata", "quantita", "barra"]
 
 INTERVALLO_SCHERMO = 0.25        # s — il battito a schermo
 INTERVALLO_LOG = 30.0            # s — un log leggibile, non un diario
+# Dopo quanto un'attesa smette di essere normale e vale la pena dire come si
+# guarda dentro al processo.
+ATTESA_SOSPETTA = 60.0
+
 INTERVALLO_REGISTRO = 2.0        # s — quanto si accetta di essere "indietro"
                                  #     quando si guarda da un'altra sessione
 
@@ -238,9 +243,15 @@ class Avanzamento(Silenzioso):
             # LUI, non calcolando. Una barra allo 0% con "mancano ?" lo
             # nasconde, e fa cercare il difetto dalla parte sbagliata — mentre
             # la causa e' quasi sempre un lock tenuto da un'altra sessione.
-            return "  %s in attesa della prima risposta del database  da %s" % (
-                GIRANDOLA[self.giro % len(GIRANDOLA)],
-                durata(adesso - self.inizio_fase))
+            attesa = adesso - self.inizio_fase
+            # Passato un minuto, l'attesa non e' piu' normale: si dice come
+            # guardare dentro al processo, con il pid gia' scritto. Una domanda
+            # che si puo' copiare e incollare viene fatta; una che va composta,
+            # no.
+            dritta = ("   (fermo? 'kill -USR1 %d' scrive qui dove sta)" % os.getpid()
+                      if attesa > ATTESA_SOSPETTA else "")
+            return "  %s in attesa della prima risposta del database  da %s%s" % (
+                GIRANDOLA[self.giro % len(GIRANDOLA)], durata(attesa), dritta)
 
         if self.contabile and self.totale:
             velocita = self.elaborati / trascorso

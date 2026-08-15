@@ -129,6 +129,52 @@ class NienteAltreConnessioniATransazioneAperta(unittest.TestCase):
                              {"Z"})
 
 
+class TipoDellaMappa(unittest.TestCase):
+    """La tabella di appoggio deve avere il tipo della colonna bersaglio.
+
+    Con un tipo diverso il confronto `vecchio = colonna` passa da una
+    conversione implicita, e su SQL Server VARCHAR contro NVARCHAR trasforma in
+    `?` tutto cio' che non sta nella codepage: le righe con caratteri accentati
+    non vengono aggiornate, in silenzio.
+    """
+
+    def setUp(self):
+        self.engine = _db()
+
+    def tearDown(self):
+        db._RIFLESSE.pop(self.engine, None)
+        self.engine.dispose()
+
+    def test_prende_il_tipo_della_colonna(self):
+        from sqlalchemy import MetaData, Unicode
+        mappa = db._tabella_mappa(MetaData(), None, Unicode(60))
+        self.assertIsInstance(mappa.c.vecchio.type, Unicode)
+        self.assertEqual(mappa.c.vecchio.type.length, 60)
+        self.assertEqual(mappa.c.nuovo.type.length, 60)
+
+    def test_una_colonna_lunga_non_diventa_chiave(self):
+        """Oltre il limite dell'indice si rinuncia alla chiave, non alla
+        correttezza: il CREATE TABLE fallirebbe."""
+        from sqlalchemy import MetaData, Unicode
+        mappa = db._tabella_mappa(MetaData(), None, Unicode(4000))
+        self.assertEqual(list(mappa.primary_key), [])
+
+    def test_senza_lunghezza_nemmeno(self):
+        from sqlalchemy import MetaData, Text
+        self.assertEqual(list(db._tabella_mappa(MetaData(), None, Text()).primary_key),
+                         [])
+
+    def test_i_valori_accentati_tornano_indietro(self):
+        """La prova che conta: un cognome accentato deve essere aggiornato come
+        tutti gli altri, non saltato."""
+        with self.engine.begin() as c:
+            c.execute(text("UPDATE t SET v = 'Farnè' WHERE id < 5"))
+        db.applica_mappa(self.engine, "t", "v", [("Farnè", "Nicolò")])
+        with self.engine.connect() as c:
+            valori = [r[0] for r in c.execute(text("SELECT v FROM t WHERE id < 5"))]
+        self.assertEqual(valori, ["Nicolò"] * 5)
+
+
 class OpzioniDelDriver(unittest.TestCase):
     """`fast_executemany` e' del driver Microsoft, non di ogni pyodbc."""
 

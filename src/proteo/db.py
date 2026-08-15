@@ -29,8 +29,8 @@ valore originale.
 
 import secrets
 
-from sqlalchemy import (Column, MetaData, String, Table, create_engine, delete,
-                       func, insert, inspect, select, text, update)
+from sqlalchemy import (Column, MetaData, Table, Unicode, create_engine,
+                       delete, func, insert, inspect, select, text, update)
 from sqlalchemy.engine import make_url
 
 __all__ = ["crea_engine", "prova_connessione", "anomalie_url",
@@ -322,13 +322,38 @@ def azzera(engine, tabella, colonna):
                                      .values({colonna: None})).rowcount
 
 
-def _tabella_mappa(md, schema):
-    """Nome irripetibile: due esecuzioni in parallelo su colonne diverse non
-    devono contendersi la stessa tabella di appoggio."""
+# Lunghezza massima di una colonna che SQL Server accetta come chiave di indice
+# (900 byte, cioe' 450 caratteri se sono a due byte). Oltre, niente chiave.
+MAX_CHIAVE = 450
+
+
+def _tabella_mappa(md, schema, tipo=None):
+    """Tabella di appoggio, **con lo stesso tipo della colonna bersaglio**.
+
+    Il tipo non e' un dettaglio di forma: la mappa viene confrontata con la
+    colonna vera (`WHERE vecchio = Cognome`), e due tipi diversi si confrontano
+    solo dopo una conversione implicita.
+
+    Con `VARCHAR` contro `NVARCHAR` — il caso di ogni database SQL Server con
+    colonne Unicode — la conversione passa dalla codepage della collazione, e
+    tutto cio' che non ci sta dentro diventa `?`. Un cognome accentato scritto
+    nella mappa come `Farn?` non e' uguale a `Farnè`, quindi quelle righe **non
+    vengono aggiornate**: nessun errore, nessun avviso, semplicemente restano
+    in chiaro. E' il tipo di guasto che si scopre contando le righe.
+
+    Prendendo il tipo dalla colonna vera — lunghezza e collazione comprese — il
+    confronto e' esatto per costruzione, e sparisce anche il rischio di
+    troncare un valore piu' lungo di quanto la mappa si aspettava.
+    """
+    tipo = tipo if tipo is not None else Unicode(512)
+    lunghezza = getattr(tipo, "length", None)
+    # Una colonna senza lunghezza dichiarata (TEXT, NVARCHAR(MAX)) non puo'
+    # fare da chiave: si rinuncia all'indice, non alla correttezza.
+    indicizzabile = bool(lunghezza) and lunghezza <= MAX_CHIAVE
     return Table(
         PREFISSO_MAPPA + secrets.token_hex(6), md,
-        Column("vecchio", String(512), primary_key=True),
-        Column("nuovo", String(512), nullable=False),
+        Column("vecchio", tipo, primary_key=indicizzabile, nullable=False),
+        Column("nuovo", tipo, nullable=False),
         schema=schema,
     )
 
@@ -383,7 +408,7 @@ def applica_mappa(engine, tabella, colonna, coppie, lotto=LOTTO_SCRITTURA,
     # dentro sarebbe un'attesa circolare senza uscita. Vedi `_tabella`.
     t = _tabella(engine, tabella)
     schema, _ = dividi_nome(tabella)
-    mappa = _tabella_mappa(MetaData(), schema)
+    mappa = _tabella_mappa(MetaData(), schema, t.c[colonna].type)
 
     # Tutto in UNA transazione, ed e' una scelta con un prezzo: le righe della
     # tabella restano bloccate dall'inizio del calcolo fino alla fine
@@ -498,7 +523,7 @@ def applica_mappa_a_lotti(engine, tabella, colonna, coppie, chiave,
     # dentro sarebbe un'attesa circolare senza uscita. Vedi `_tabella`.
     t = _tabella(engine, tabella)
     schema, _ = dividi_nome(tabella)
-    mappa = _tabella_mappa(MetaData(), schema)
+    mappa = _tabella_mappa(MetaData(), schema, t.c[colonna].type)
 
     with engine.begin() as conn:
         avanzamento.fase("scrivo la mappa nella tabella di appoggio",
