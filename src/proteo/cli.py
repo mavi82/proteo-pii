@@ -66,6 +66,7 @@ from .stampa import SI
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
 from .registro import AZZERATA, CIFRATA, IN_CHIARO, Registro
+from .surrogati import ValoreNonTrattabile
 
 __all__ = ["main"]
 
@@ -584,6 +585,18 @@ def _esegui(args, verso):
                                      diario=_DIARIO))
     except VerificaFallita as e:
         raise Uscita(str(e))
+    except ValoreNonTrattabile as e:
+        # Il menu offre la scelta a video; qui si dice il comando, che e' la
+        # stessa decisione. Un traceback, invece, non e' ne' l'una ne' l'altra.
+        raise Uscita(
+            "fermato su un valore che non so trattare: %s\n"
+            "  La colonna NON e' stata modificata.\n"
+            "  Due strade: correggere quei valori nel database (la piu' "
+            "pulita),\n"
+            "  oppure rilanciare con --su-errore salta — ma quei valori "
+            "RESTANO IN CHIARO,\n"
+            "  cioe' quei record restano riconoscibili, e il rapporto finale li "
+            "elenca." % e)
 
     print("\nfatto.")
     stampa.rapporto(rapporto)

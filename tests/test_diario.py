@@ -172,6 +172,18 @@ class ComandiRifiutati(unittest.TestCase):
         self.assertIn("rifiutato: gia' cifrata", p.read_text(encoding="utf-8"))
 
 
+class SenzaTraceback(unittest.TestCase):
+    """Un valore non trattabile e' una decisione da prendere, non un difetto."""
+
+    def test_la_riga_di_comando_non_mostra_un_traceback(self):
+        from proteo import cli
+        from proteo.surrogati import ValoreNonTrattabile
+        sorgente = Path(cli.__file__).read_text(encoding="utf-8")
+        self.assertIn("except ValoreNonTrattabile", sorgente)
+        self.assertIn("--su-errore salta", sorgente)
+        self.assertTrue(issubclass(ValoreNonTrattabile, ValueError))
+
+
 class Intestazione(unittest.TestCase):
     def test_dice_versioni_e_opzioni(self):
         """E' la prima cosa che si chiede a chi segnala un problema, e la piu'
