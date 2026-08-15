@@ -48,11 +48,23 @@ LOTTO_LETTURA_PYODBC = 1_000
 
 LOTTO_SCRITTURA = 10_000
 
-# FreeTDS non regge gli stessi lotti del driver Microsoft: un executemany da
-# diecimila righe puo' far cadere la connessione ("Unexpected EOF from the
-# server") invece di dare un errore. Mille righe per volta sono trenta
-# round-trip in piu' e nessuna sorpresa.
+# FreeTDS non regge gli stessi lotti del driver Microsoft. Il sintomo, dal lato
+# server, e':
+#
+#   Error: 4014, Severity: 20 — A fatal error occurred while reading the input
+#   stream from the network. The session will be terminated.
+#
+# cioe' SQL Server chiude la sessione perche' non riesce piu' a leggere il flusso
+# TDS che gli arriva; dal lato client si vede solo "Unexpected EOF from the
+# server". Non e' un errore di SQL: e' una richiesta troppo grande per come
+# FreeTDS la impacchetta.
 LOTTO_SCRITTURA_FREETDS = 1_000
+
+# Quante righe SQLAlchemy accorpa in una singola INSERT ... VALUES. Il valore
+# predefinito (1.000) su due colonne da 512 caratteri produce una richiesta da
+# un paio di MB, che FreeTDS spezza in centinaia di pacchetti: e' li' che il
+# flusso si rompe. Duecento righe sono ~200 KB per istruzione.
+PAGINA_INSERT_FREETDS = 200
 
 # Le tabelle di appoggio si riconoscono dal nome: e' cio' che permette di
 # ritrovarne una rimasta indietro dopo un processo ucciso.
@@ -323,18 +335,21 @@ def _tabella_mappa(md, schema):
 
 def _riempi(conn, mappa, coppie, lotto, avanzamento):
     """Versa le coppie nella tabella di appoggio. Ritorna quante ne ha scritte."""
+    scrivi = insert(mappa)
     if _e_freetds(conn.engine.url):
         lotto = min(lotto, LOTTO_SCRITTURA_FREETDS)
+        scrivi = scrivi.execution_options(
+            insertmanyvalues_page_size=PAGINA_INSERT_FREETDS)
     n_mappate, buffer = 0, []
     for vecchio, nuovo in coppie:
         buffer.append({"vecchio": vecchio, "nuovo": nuovo})
         if len(buffer) >= lotto:
-            conn.execute(insert(mappa), buffer)
+            conn.execute(scrivi, buffer)
             n_mappate += len(buffer)
             buffer = []
             avanzamento.avanti(n_mappate)
     if buffer:
-        conn.execute(insert(mappa), buffer)
+        conn.execute(scrivi, buffer)
         n_mappate += len(buffer)
     avanzamento.avanti(n_mappate)
     return n_mappate

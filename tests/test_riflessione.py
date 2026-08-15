@@ -149,6 +149,12 @@ class OpzioniDelDriver(unittest.TestCase):
         from sqlalchemy.engine import make_url
         self.assertFalse(db._e_freetds(make_url("mssql+pyodbc://u:p@h:1433/d")))
 
+    def test_la_pagina_di_insert_e_piccola(self):
+        """Il flusso TDS si rompe sulle richieste grandi: SQL Server chiude la
+        sessione con l'errore 4014 e il client vede solo 'Unexpected EOF'."""
+        self.assertLessEqual(db.PAGINA_INSERT_FREETDS, 500)
+        self.assertLessEqual(db.LOTTO_SCRITTURA_FREETDS, db.LOTTO_SCRITTURA)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
