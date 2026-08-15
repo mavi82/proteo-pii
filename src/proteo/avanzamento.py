@@ -232,6 +232,16 @@ class Avanzamento(Silenzioso):
         trascorso = max(adesso - self.inizio_colonna, 1e-6)
         self.giro += 1
 
+        if self.contabile and not self.elaborati:
+            # Zero elementi in una fase che ne conta significa che la prima
+            # risposta del database non e' ancora arrivata: si sta aspettando
+            # LUI, non calcolando. Una barra allo 0% con "mancano ?" lo
+            # nasconde, e fa cercare il difetto dalla parte sbagliata — mentre
+            # la causa e' quasi sempre un lock tenuto da un'altra sessione.
+            return "  %s in attesa della prima risposta del database  da %s" % (
+                GIRANDOLA[self.giro % len(GIRANDOLA)],
+                durata(adesso - self.inizio_fase))
+
         if self.contabile and self.totale:
             velocita = self.elaborati / trascorso
             mancano = ((self.totale - self.elaborati) / velocita

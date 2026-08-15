@@ -85,6 +85,15 @@ class SuLog(unittest.TestCase):
         self.assertGreaterEqual(righe, 15)
         self.assertLessEqual(righe, 25)
 
+    def test_fermo_a_zero_lo_dice(self):
+        """Una barra allo 0% con 'mancano ?' fa cercare il difetto dalla parte
+        sbagliata: quasi sempre e' il database che non ha ancora risposto."""
+        self.av.ultimo_log = 0
+        self.av._disegna()
+        riga = self.out.getvalue().splitlines()[-1]
+        self.assertIn("in attesa della prima risposta del database", riga)
+        self.assertNotIn("mancano ?", riga)
+
     def test_percentuale_e_stima(self):
         self._avanti(100)
         riga = self.out.getvalue().splitlines()[-1]
@@ -199,6 +208,11 @@ class NelRegistro(unittest.TestCase):
     def test_non_crea_voci_che_avvia_non_ha_creato(self):
         self.assertIsNone(self.reg.avanzamento("DB", "altra", "colonna", elaborati=1))
         self.assertIsNone(self.reg.leggi("DB", "altra", "colonna"))
+
+    def test_anche_stato_dice_che_e_fermo_a_zero(self):
+        self.av._scrivi_registro(forza=True)
+        riga = stampa._avanzamento(self.reg.leggi("DB", "clienti", "cf"))
+        self.assertIn("in attesa", riga)
 
     def test_stato_mostra_a_che_punto_e(self):
         self.av.avanti(200)

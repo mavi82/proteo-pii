@@ -191,8 +191,12 @@ def _avanzamento(voce):
         return None
 
     elaborati, distinti = voce["elaborati"], voce.get("distinti")
-    pezzi = ["%s/%s valori" % (quantita(elaborati), quantita(distinti))]
-    if distinti:
+    if not elaborati:
+        # Vale anche visto da un'altra sessione: fermo a zero non e' "lento".
+        pezzi = ["in attesa della prima risposta del database"]
+    else:
+        pezzi = ["%s/%s valori" % (quantita(elaborati), quantita(distinti))]
+    if distinti and elaborati:
         pezzi.append("%d%%" % (100 * elaborati // max(distinti, 1)))
     iniziato = voce.get("iniziato")
     if iniziato:
