@@ -263,11 +263,12 @@ ancora scritto.
 | `cli.py` | ✅ | riga di comando: chiave, bozza di policy, verifica, anteprima, cifra, decifra |
 | `menu.py` | ✅ | il menu guidato, connessione compresa |
 | `rilevamento.py` | ✅ | riconosce CF/PIVA/IBAN campionando i valori |
+| `diario.py` | ✅ | il diario delle operazioni, senza valori veri |
 | `diagnosi.py` | ✅ | da un errore del driver alla riga di comando che lo risolve |
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**269 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**280 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -547,6 +548,43 @@ quindi vengono cercate invece di aspettare che qualcuno le noti. Con una
 transazione andata a buon fine non ne resta nessuna; ne sopravvive una solo se
 il processo è stato ucciso su un motore dove il `CREATE TABLE` non è
 transazionale (MySQL, SQLite).
+
+### Il diario delle operazioni
+
+Ogni esecuzione scrive un diario accanto al file di configurazione
+(`proteo.json` → `proteo.log`, oppure `--diario percorso`, `--senza-diario` per
+non scriverlo). Serve a rispondere alla domanda che a schermo non trova posto:
+*cos'è successo davvero?*
+
+```
+2026-08-15 12:43:43  proteo avviato — proteo cifra --lotto-righe 1000
+2026-08-15 12:43:43    python 3.14.0 su Linux-6.14-x86_64
+2026-08-15 12:43:43    sqlalchemy 2.0.52 · pyodbc 5.2.0
+2026-08-15 12:43:43    url: mssql+pyodbc://sa:***@127.0.0.1:1433/EasyDiet?driver=FreeTDS
+2026-08-15 12:43:43    lotto_righe: 1000
+2026-08-15 12:43:43  colonna T_Pazienti.Cognome (COGNOME) — cifra
+2026-08-15 12:43:43    fase: conto le righe e i valori distinti
+2026-08-15 12:43:44  SQL   SELECT count(*) FROM T_Pazienti
+2026-08-15 12:43:44    ok  0.412s
+2026-08-15 12:44:02    conclusa: 77900 righe aggiornate in 18.4s, 5 valori saltati
+```
+
+C'è l'intestazione con versioni, driver e opzioni — è la prima cosa che si
+chiede a chi segnala un problema, e la più noiosa da raccogliere a mano — poi
+ogni fase, ogni istruzione SQL con la sua durata, ogni errore con la traccia.
+Le sessioni si accodano: confrontare quella che ha funzionato con quella che
+non ha funzionato è spesso la diagnosi.
+
+**Il diario non contiene nessun valore del database**, ed è una regola di
+progetto, non una precauzione generica: delle istruzioni si scrive il testo e
+mai i parametri (sarebbero i valori veri e i loro surrogati), dei valori
+saltati si scrive quanti sono e perché, mai quali, e dell'URL si scrive la
+forma con la password nascosta. Un diario che contenesse quei parametri sarebbe
+esattamente il dizionario `valore → surrogato` che il progetto esiste per non
+produrre — solo, in un file di testo che nessuno tratterebbe come sensibile.
+
+È così perché un diario serve a essere **mandato a qualcuno**: se non si potesse
+condividere non verrebbe scritto, e allora tanto varrebbe non averlo.
 
 ### Quando la sessione SSH cade
 

@@ -61,7 +61,7 @@ from sqlalchemy.engine import make_url
 
 from . import config as cfg
 from . import avanzamento as av
-from . import db, diagnosi, keyfile, rilevamento, stampa
+from . import db, diagnosi, diario as dia, keyfile, rilevamento, stampa
 from .stampa import SI
 from .motore import Motore, VerificaFallita
 from .policy import Policy, PolicyNonValida
@@ -85,6 +85,29 @@ class Uscita(SystemExit):
 # --------------------------------------------------------------------------- #
 # Parametri: opzione, ambiente, configurazione
 # --------------------------------------------------------------------------- #
+# Uno solo per esecuzione: aperto alla prima richiesta, chiuso alla fine.
+_DIARIO = dia.Silenzioso()
+
+
+def _apri_diario(args, config=None, voce=None):
+    """Percorso: opzione, poi config, poi accanto al file di configurazione."""
+    global _DIARIO
+    if not isinstance(_DIARIO, dia.Silenzioso):
+        return _DIARIO
+    if getattr(args, "senza_diario", False):
+        return _DIARIO
+
+    percorso = getattr(args, "diario", None)
+    if not percorso and voce:
+        percorso = voce.get("diario")
+    if not percorso:
+        vicino = getattr(args, "config", None) or cfg.percorso_predefinito()
+        percorso = (Path(vicino).with_suffix(".log") if vicino
+                    else Path("proteo.log"))
+    _DIARIO = dia.apri(percorso)
+    return _DIARIO
+
+
 def _config(args):
     percorso = getattr(args, "config", None) or cfg.percorso_predefinito()
     if not percorso:
@@ -147,13 +170,24 @@ def _fallita(errore, cosa):
 
 def _apri(args, config, voce):
     """Engine, o un errore leggibile: un URL storto non merita un traceback."""
+    diario = _apri_diario(args, config, voce)
     try:
-        return db.crea_engine(_url(args, config, voce))
+        url = _url(args, config, voce)
+        diario.intestazione(url=url.render_as_string(hide_password=True),
+                            comando=getattr(args, "comando", None),
+                            lotto_righe=getattr(args, "lotto_righe", None),
+                            registro=_percorso(args, config, voce, "registro"),
+                            policy=_percorso(args, config, voce, "policy"))
+        engine = db.crea_engine(url)
+        diario.collega(engine)
+        return engine
     except ArgumentError as e:
+        diario.errore(e, "URL")
         raise Uscita("URL del database non utilizzabile: %s" % e)
     except Exception as e:                                  # noqa: BLE001
         # `create_engine` importa il driver, e un driver che manca solleva di
         # tutto — ImportError, OSError, eccezioni proprie. Vedi `diagnosi.py`.
+        diario.errore(e, "connessione")
         _fallita(e, "non riesco a preparare la connessione")
 
 
@@ -542,7 +576,8 @@ def _esegui(args, verso):
                                  solo=[solo] if solo else None,
                                  avanzamento=av.Avanzamento(
                                      registro=motore.registro,
-                                     database=motore.database))
+                                     database=motore.database,
+                                     diario=_DIARIO))
     except VerificaFallita as e:
         raise Uscita(str(e))
 
@@ -622,6 +657,10 @@ def _parser():
         s.add_argument("--url", help="URL SQLAlchemy (scavalca config e $PROTEO_URL)")
         s.add_argument("--database", help="etichetta del registro")
         s.add_argument("--registro", help="cartella del registro")
+        s.add_argument("--diario", help="file del diario delle operazioni "
+                                        "(default: accanto al config)")
+        s.add_argument("--senza-diario", dest="senza_diario",
+                       action="store_true", help="non scrivere il diario")
         if con_chiave:
             s.add_argument("--chiave", help="file di chiave")
             s.add_argument("--policy", help="file di policy")
@@ -757,17 +796,26 @@ def main(argv=None):
     _dove_sono_fermo()
     args = _parser().parse_args(argv)
     try:
-        args.func(args)
+        try:
+            args.func(args)
+        except SystemExit:
+            raise
+        except BaseException as e:
+            _DIARIO.errore(e, getattr(args, "comando", ""))
+            raise
     except KeyboardInterrupt:
         # Un'interruzione durante `esegui` lascia la voce del registro in
         # 'in_corso': e' il segnale corretto, non un difetto. La transazione
         # invece torna indietro da sola — ma il rollback puo' durare quanto il
         # lavoro fatto, e in quel tempo il database tiene ancora i lock.
+        _DIARIO.riga("interrotto dall'utente (Ctrl-C)")
         print("\ninterrotto. Il database sta annullando la transazione: puo' "
               "durare\nquanto il lavoro fatto finora, e fino ad allora la "
               "tabella resta bloccata.\nControlla poi 'stato' e 'pulisci'.",
               file=sys.stderr)
         return 130
+    finally:
+        _DIARIO.chiudi()
     return 0
 
 

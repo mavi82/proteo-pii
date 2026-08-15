@@ -26,6 +26,7 @@ from pathlib import Path
 from sqlalchemy.engine import URL
 
 from . import config as cfg
+from . import diario as dia
 from . import avanzamento as av
 from . import db, diagnosi, keyfile, rilevamento, repo, stampa
 from .stampa import NO, SI
@@ -90,6 +91,12 @@ def _conferma(domanda, predefinito=None):
         print("  rispondi y o n%s." % ("" if predefinito is None
                                        else ", o invio per %s"
                                        % ("y" if predefinito else "n")))
+
+
+def _diario():
+    """Il diario aperto dalla riga di comando, se c'e'."""
+    from .cli import _DIARIO
+    return _DIARIO
 
 
 def _pausa():
@@ -608,7 +615,8 @@ def _riprendi(config, nome, engine, verso, voce):
     try:
         r = m.esegui(verso, solo=solo, riprendi=voce,
                      avanzamento=av.Avanzamento(registro=m.registro,
-                                                database=m.database))
+                                                database=m.database,
+                                                diario=_diario()))
     except (VerificaFallita, ValoreNonTrattabile) as e:
         print("\nfermato prima di finire: %s" % e)
         return
@@ -667,7 +675,8 @@ def _cifra_una_colonna(config, nome, engine, verso):
     try:
         r = m.esegui(verso, solo=solo,
                      avanzamento=av.Avanzamento(registro=m.registro,
-                                                database=m.database))
+                                                database=m.database,
+                                                diario=_diario()))
     except VerificaFallita as e:
         print("\nfermato prima di finire: %s" % e)
         return
@@ -732,7 +741,8 @@ def _azione_scrittura(config, nome, engine, verso):
 
     try:
         r = m.esegui(verso, avanzamento=av.Avanzamento(registro=m.registro,
-                                                       database=m.database))
+                                                       database=m.database,
+                                                       diario=_diario()))
     except VerificaFallita as e:
         print("\nfermato prima di scrivere:\n%s" % e)
         return
@@ -781,7 +791,8 @@ def _non_trattabili(m, verso, errore, solo=None):
     try:
         r = m.esegui(verso, su_valore_non_trattabile="salta", solo=solo,
                      avanzamento=av.Avanzamento(registro=m.registro,
-                                                database=m.database))
+                                                database=m.database,
+                                                diario=_diario()))
     except VerificaFallita as e:
         print("\nfermato prima di scrivere:\n%s" % e)
         return

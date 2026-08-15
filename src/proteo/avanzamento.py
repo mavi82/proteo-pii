@@ -119,10 +119,15 @@ class Avanzamento(Silenzioso):
     """
 
     def __init__(self, uscita=None, registro=None, database=None, tty=None,
-                 battito=True):
+                 battito=True, diario=None):
         self.uscita = uscita or sys.stdout
         self.registro = registro
         self.database = database
+        # Il diario riceve gli stessi passaggi, ma solo quelli: mai un valore.
+        # Vedi `diario.py` — deve restare un file che si puo' mandare a
+        # qualcuno.
+        from . import diario as _diario
+        self.diario = diario or _diario.Silenzioso()
         # Una riga che si riscrive con \r ha senso solo su un terminale. In un
         # file di log produrrebbe una riga chilometrica illeggibile.
         self.tty = self.uscita.isatty() if tty is None else tty
@@ -144,6 +149,7 @@ class Avanzamento(Silenzioso):
         self.ultimo_passo = -1
         self.ultimo_registro = 0.0
         self.giro = 0
+        self.saltati = 0
         self.aperta = False
 
     # -- eventi ------------------------------------------------------------- #
@@ -152,12 +158,14 @@ class Avanzamento(Silenzioso):
         self._reset()
         self.tabella, self.colonna_ = tabella, colonna
         self.tipo, self.verso = tipo, verso
+        self.diario.riga("colonna %s.%s (%s) — %s", tabella, colonna, tipo, verso)
         self._riga("\n%s %s.%s (%s)" % (verso, tabella, colonna, tipo))
         self._avvia_battito()
 
     def totali(self, righe, distinti):
         self.righe, self.distinti = righe, distinti
         self.totale = distinti
+        self.diario.riga("  %s righe, %s valori distinti", righe, distinti)
         self._riga("  %s righe, %s valori distinti"
                    % (quantita(righe), quantita(distinti)))
 
@@ -181,6 +189,7 @@ class Avanzamento(Silenzioso):
                 self.totale = totale if totale is not None else self.righe
                 self.elaborati = 0
                 self.ultimo_passo = -1
+        self.diario.riga("  fase: %s", descrizione)
         self._scrivi_registro(forza=True)
         self._disegna(forza=True)
 
@@ -198,12 +207,19 @@ class Avanzamento(Silenzioso):
 
     def conclusa(self, righe_toccate):
         self._ferma_battito()
+        self.diario.riga("  conclusa: %s righe aggiornate in %.1fs%s",
+                         righe_toccate, time.time() - self.inizio_colonna,
+                         ", %d valori saltati (restano in chiaro)" % self.saltati
+                         if self.saltati else "")
         self._riga("  fatto: %s righe aggiornate in %s"
                    % (quantita(righe_toccate),
                       durata(time.time() - self.inizio_colonna)))
         self._scrivi_registro(forza=True)
 
     def scartato(self, valore, motivo):
+        # Nel diario il conteggio, non il valore: quello e' un dato vero, e il
+        # diario deve restare condivisibile.
+        self.saltati += 1
         self._riga("  saltato (RESTA IN CHIARO): %r — %s" % (valore, motivo))
 
     def chiudi(self):
