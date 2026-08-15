@@ -92,7 +92,7 @@ class Contenuto(unittest.TestCase):
     def test_un_valore_non_trattabile_e_segnalato_non_nascosto(self):
         _, dopo, errore = self.voci[0]["righe"][3]["celle"]["nome"]
         self.assertIsNone(dopo)
-        self.assertIn("almeno due", errore)
+        self.assertIn("troppo corto", errore)
 
     def test_i_nulli_restano_nulli(self):
         self.assertEqual(self.voci[0]["righe"][4]["celle"]["nome"], (None, None, None))
@@ -145,7 +145,7 @@ class Resa(unittest.TestCase):
             self.assertIn("id", testata)
 
     def test_il_motivo_di_uno_scarto_si_legge_per_esteso(self):
-        self.assertIn("almeno due", self.testo)
+        self.assertIn("troppo corto", self.testo)
 
     def test_i_valori_lunghi_si_tagliano(self):
         lunga = [{"tabella": "t", "chiave": [], "colonne": ["c"],

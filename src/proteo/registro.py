@@ -229,8 +229,10 @@ class Registro:
             # Una voce aggiunta in mezzo sposta la posizione di tutte quelle che
             # seguono: i surrogati prodotti prima non si ritrovano piu'.
             raise StatoIncoerente(
-                "%s e' stata cifrata con la lista %s, ma quella caricata e' %s. "
-                "La lista fa parte di cio' che serve per tornare indietro: "
-                "recupera la versione con cui e' stata cifrata."
-                % (dove, v.get("lista"), lista))
+                "%s e' stata cifrata con %s, ma adesso risulta %s. Cambia la "
+                "lista dei nomi o il modo di trattare i valori fuori lista, e "
+                "in entrambi i casi i surrogati non si ritrovano piu': "
+                "decifrare ora restituirebbe valori diversi dagli originali.\n"
+                "  Serve la versione di Proteo — e la lista — con cui e' stata "
+                "cifrata." % (dove, v.get("lista"), lista))
         return v

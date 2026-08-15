@@ -30,6 +30,107 @@ MESI = "ABCDEHLMPRST"          # lettera del mese nel codice fiscale
 _LETTERE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _CIFRE = "0123456789"
 
+# Le due classi che rendono una parola pronunciabile. Cifrando dentro ciascuna,
+# lo scheletro consonante/vocale resta quello dell'originale — ed e' lo
+# scheletro a far sembrare un nome un nome.
+_VOCALI = "AEIOU"
+_CONSONANTI = "BCDFGHJKLMNPQRSTVWXYZ"
+
+# I gruppi che l'italiano ammette. Conservare solo l'alternanza
+# consonante/vocale non basta: `Francesco` ha un gruppo `fr` legale, e
+# scambiando le due consonanti a caso ne esce `nf`, che nessuno pronuncia.
+# I gruppi con liquida si elencano, non si combinano: `br` e `tr` esistono,
+# `dl` e `tl` no, e generarli rimetterebbe dentro proprio le sequenze che
+# rendono la parola muta.
+_GRUPPI_LIQUIDI = ("BL", "BR", "CL", "CR", "DR", "FL", "FR", "GL", "GR",
+                   "PL", "PR", "TR", "VR")
+_LIQUIDE = "LR"                       # anche prima di una consonante: Curci, Alberto
+_OCCLUSIVE = "BCDGPT"                 # dopo una nasale (mb, nt) o una s (st, sp)
+_NASALI = "MN"
+_DIGRAMMI = ("CH", "GH")              # una consonante piu' h e' un suono solo
+
+# Sotto queste combinazioni FF1 si rifiuta, e a ragione: un dominio piccolo si
+# rimappa contando le occorrenze.
+DOMINIO_MINIMO = 100
+
+
+def _forma(parola, unita=None):
+    """Cio' che il surrogato deve conservare per restare leggibile e reversibile.
+
+    I tipi delle unita' — perche' se il surrogato si rileggesse con unita'
+    diverse, la decifratura lo scomporrebbe in un altro modo e restituirebbe un
+    valore diverso — e le vocali doppie, che l'italiano quasi non ha: `uu` da
+    `ia` sarebbe corretto e illeggibile.
+    """
+    unita = unita if unita is not None else _unita(parola)
+    doppie = [i for i in range(len(parola) - 1)
+              if parola[i] == parola[i + 1] and parola[i] in _VOCALI]
+    return ([tipo for tipo, _ in unita], doppie)
+
+
+def _unita(parola):
+    """Spezza una parola nei pezzi che si possono permutare senza renderla muta.
+
+    Non lettere ma **unita' pronunciabili**: una vocale, una consonante, un
+    raddoppio (`tt`), un gruppo con liquida (`fr`), una nasale piu' occlusiva
+    (`mb`), una `s` piu' occlusiva (`st`). Ogni unita' viene poi permutata
+    dentro l'insieme delle unita' dello stesso tipo, cosi' `fr` diventa `br` o
+    `tl` — mai `nf`.
+
+    L'ordine dei controlli conta: il raddoppio si riconosce per primo, perche'
+    `ll` va letto come raddoppio e non come gruppo con liquida.
+    """
+    unita, i = [], 0
+    while i < len(parola):
+        c = parola[i]
+        # `dopo` puo' essere vuoto, ed e' il caso da nominare: in Python
+        # `"" in "BCDGPT"` e' vero, quindi l'ultima lettera di una parola
+        # sembrerebbe l'inizio di un gruppo che non c'e'.
+        dopo = parola[i + 1] if i + 1 < len(parola) else ""
+        if c in _VOCALI:
+            unita.append(("V", c))
+        elif dopo and dopo == c and c in _CONSONANTI:
+            unita.append(("GG", c + dopo))
+        elif c + dopo in _GRUPPI_LIQUIDI:
+            unita.append(("CL", c + dopo))
+        elif c + dopo in _DIGRAMMI:
+            unita.append(("DI", c + dopo))
+        elif dopo and c in _NASALI and dopo in _OCCLUSIVE:
+            unita.append(("NO", c + dopo))
+        elif dopo and c == "S" and dopo in _OCCLUSIVE:
+            unita.append(("SO", c + dopo))
+        elif dopo and c in _LIQUIDE and dopo in _CONSONANTI:
+            # Curci, Alberto: una liquida prima di una consonante e' legale, e
+            # va tenuta insieme o le due consonanti si scambiano a caso.
+            unita.append(("LC", c + dopo))
+        else:
+            unita.append(("C", c))
+        i += len(unita[-1][1])
+    return unita
+
+
+# tipo -> (quante combinazioni, come si legge l'indice, come si riscrive)
+_TIPI_UNITA = {
+    "V":  (len(_VOCALI), lambda p: _VOCALI.index(p),
+           lambda i: _VOCALI[i]),
+    "C":  (len(_CONSONANTI), lambda p: _CONSONANTI.index(p),
+           lambda i: _CONSONANTI[i]),
+    "GG": (len(_CONSONANTI), lambda p: _CONSONANTI.index(p[0]),
+           lambda i: _CONSONANTI[i] * 2),
+    "CL": (len(_GRUPPI_LIQUIDI), lambda p: _GRUPPI_LIQUIDI.index(p),
+           lambda i: _GRUPPI_LIQUIDI[i]),
+    "DI": (len(_DIGRAMMI), lambda p: _DIGRAMMI.index(p),
+           lambda i: _DIGRAMMI[i]),
+    "LC": (len(_LIQUIDE) * len(_CONSONANTI),
+           lambda p: _LIQUIDE.index(p[0]) * len(_CONSONANTI) + _CONSONANTI.index(p[1]),
+           lambda i: _LIQUIDE[i // len(_CONSONANTI)] + _CONSONANTI[i % len(_CONSONANTI)]),
+    "NO": (len(_NASALI) * len(_OCCLUSIVE),
+           lambda p: _NASALI.index(p[0]) * len(_OCCLUSIVE) + _OCCLUSIVE.index(p[1]),
+           lambda i: _NASALI[i // len(_OCCLUSIVE)] + _OCCLUSIVE[i % len(_OCCLUSIVE)]),
+    "SO": (len(_OCCLUSIVE), lambda p: _OCCLUSIVE.index(p[1]),
+           lambda i: "S" + _OCCLUSIVE[i]),
+}
+
 
 class ValoreNonTrattabile(ValueError):
     """Il valore non ha la struttura attesa: il chiamante decide cosa farne.
@@ -260,37 +361,104 @@ class Surrogatore:
         raise RuntimeError("cycle-walking non converge fuori dalla lista")
 
     def _mescola(self, valore, tweak, avanti):
-        """Cifra lettere e cifre al loro posto, lasciando il resto dov'e'.
+        """Cifra il nome conservandone lo **scheletro**: vocali e consonanti al
+        loro posto, cifre al loro posto, tutto il resto dov'e'.
 
-        Per classi, come nell'IBAN: le lettere restano lettere e le cifre cifre,
-        cosi' `Maria Matias` resta due parole della stessa lunghezza. Gli spazi,
-        i trattini e le lettere accentate restano dove sono — sono struttura, e
-        cambiarli renderebbe il valore irriconoscibile come nome senza aggiungere
-        nulla alla protezione.
+        ## Perche' non basta cifrare le lettere
+
+        La prima versione cifrava le lettere come un blocco unico, sull'alfabeto
+        intero. Il risultato era corretto — reversibile, biiettivo — e
+        inservibile: `Acciaro` diventava `Jkjnpmg`, cioe' una sequenza che
+        nessuna lingua potrebbe pronunciare. Su una colonna di cognomi, dove i
+        valori fuori lista sono la maggioranza, il database smetteva di
+        somigliare a un database di persone: e' esattamente il difetto che
+        questo progetto rimprovera alla cifratura tradizionale.
+
+        Una parola pero' non e' una sequenza di lettere qualunque: e' fatta di
+        pezzi pronunciabili — una vocale, una consonante, un raddoppio (`tt`),
+        un gruppo con liquida (`fr`), una nasale piu' occlusiva (`mb`), una `s`
+        piu' occlusiva (`st`). Cifrando **dentro ciascun tipo** — un raddoppio
+        diventa un raddoppio, un gruppo con liquida un altro gruppo con liquida
+        — la parola resta una parola:
+
+            Acciaro   ->  Ebbiaso        Francesco  ->  Prantosco
+            Zambetta  ->  Vondelta       Della sala ->  Nesso pera
+
+        Conservare solo l'alternanza consonante/vocale non basterebbe: da
+        `Francesco` uscirebbe `Nfuwxibzu`, con un `nf` che nessuno pronuncia.
+
+        E' lo stesso principio gia' usato per l'IBAN, dove le cifre restano
+        cifre perche' un IBAN con lettere dentro l'ABI si riconoscerebbe come
+        falso a colpo d'occhio. Qui la classe non e' cifra/lettera ma
+        vocale/consonante, e cio' che si preserva non e' un formato ma la
+        pronunciabilita'.
+
+        ## Perche' un dominio unico e non due
+
+        Vocali e consonanti si potrebbero cifrare separatamente, ma una parola
+        con due sole vocali darebbe un dominio di 25 valori — sotto il minimo, e
+        quelle vocali resterebbero in chiaro. Si costruisce quindi **un solo
+        numero** in base mista (5 per le vocali, 21 per le consonanti), lo si
+        permuta, e lo si riscrive nello stesso scheletro: il dominio e' il
+        prodotto di tutte le posizioni, e diventa piccolo solo per parole di due
+        lettere o meno.
         """
         fuori = list(valore)
-        for classe, alfabeto in ((_LETTERE, _LETTERE), (_CIFRE, _CIFRE)):
-            pos = [i for i, ch in enumerate(valore) if ch.upper() in classe]
-            # Un solo carattere ha dominio 26 o 10: sotto il minimo di FF1.
-            # Resta com'e', come il CIN dell'IBAN.
-            if len(pos) < 2:
-                continue
-            s = "".join(valore[i].upper() for i in pos)
-            etichetta = tweak + b"|fuori|" + alfabeto[:1].encode()
-            s2 = (self.ff1.encrypt_str(s, alfabeto, etichetta) if avanti
-                  else self.ff1.decrypt_str(s, alfabeto, etichetta))
-            for i, ch in zip(pos, s2):
-                fuori[i] = ch if valore[i].isupper() else ch.lower()
 
-        nuovo = "".join(fuori)
-        if nuovo == valore:
-            # Nessun gruppo abbastanza lungo da cifrare: il valore uscirebbe
-            # identico, cioe' in chiaro, ed e' l'unico esito che non si puo'
-            # accettare in silenzio.
-            raise ValoreNonTrattabile(
-                "%r non ha abbastanza lettere da cifrare (ne servono almeno due)"
-                % valore)
-        return nuovo
+        # cifre: gruppo a parte, come prima. `Nome-paz2` deve restare distinto
+        # da `Nome-paz3`.
+        pos_cifre = [i for i, ch in enumerate(valore) if ch in _CIFRE]
+        if len(pos_cifre) >= 2:
+            s = "".join(valore[i] for i in pos_cifre)
+            etichetta = tweak + b"|fuori|cifre"
+            s2 = (self.ff1.encrypt_str(s, _CIFRE, etichetta) if avanti
+                  else self.ff1.decrypt_str(s, _CIFRE, etichetta))
+            for i, ch in zip(pos_cifre, s2):
+                fuori[i] = ch
+
+        pos = [i for i, ch in enumerate(valore) if ch.upper() in _LETTERE]
+        parola = "".join(valore[i].upper() for i in pos)
+        unita = _unita(parola)
+        domini = [_TIPI_UNITA[tipo][0] for tipo, _ in unita]
+        dominio = 1
+        for d in domini:
+            dominio *= d
+
+        if dominio < DOMINIO_MINIMO:
+            nuovo = "".join(fuori)
+            if nuovo == valore:
+                raise ValoreNonTrattabile(
+                    "%r e' troppo corto per essere cifrato: le sue lettere danno "
+                    "%d combinazioni, sotto il minimo di %d"
+                    % (valore, dominio, DOMINIO_MINIMO))
+            return nuovo
+
+        indice = 0
+        for (tipo, pezzo), d in zip(unita, domini):
+            indice = indice * d + _TIPI_UNITA[tipo][1](pezzo)
+
+        # Cycle-walking sulla FORMA: si ricifra finche' il risultato non si
+        # rilegge con le stesse unita' dell'originale. Serve perche' due
+        # consonanti singole vicine potrebbero uscire uguali — cioe' come un
+        # raddoppio — e in decifratura verrebbero lette come un'unita' sola,
+        # restituendo un valore diverso. Camminare finche' la forma coincide
+        # rende i due percorsi simmetrici.
+        forma = _forma(parola, unita)
+        for _ in range(100):
+            indice = _fpe_int(self.ff1, indice, dominio, tweak + b"|unita", avanti)
+            resto, lettere = indice, []
+            for (tipo, _), d in zip(reversed(unita), reversed(domini)):
+                resto, quoziente = divmod(resto, d)
+                lettere.append(_TIPI_UNITA[tipo][2](quoziente))
+            parola2 = "".join(reversed(lettere))
+            if _forma(parola2) == forma:
+                break
+        else:
+            raise RuntimeError("cycle-walking sulla forma non converge")
+
+        for i, ch in zip(pos, parola2):
+            fuori[i] = ch if valore[i].isupper() else ch.lower()
+        return "".join(fuori)
 
     def nome(self, valore, tweak, avanti=True):
         return self._da_lista("nomi", valore, tweak, avanti)
@@ -305,6 +473,15 @@ class Surrogatore:
     # tipi che dipendono da una lista: il chiamante deve sapere quali, per
     # registrarne l'impronta e accorgersi se la lista cambia sotto i piedi
     LISTE = {"NOME": "nomi", "COGNOME": "cognomi"}
+
+    # Versione del ripiego per i valori fuori lista. Cambia quando cambia il
+    # modo di cifrarli, e viaggia nel registro insieme all'impronta della
+    # lista: cio' che e' stato cifrato con la versione 1 non si decifra con la
+    # 2, e deve fermarsi invece di restituire un valore diverso dall'originale.
+    #
+    #   1  lettere cifrate come un blocco unico sull'alfabeto intero
+    #   2  scheletro consonante/vocale conservato (vedi `_mescola`)
+    VERSIONE_RIPIEGO = 2
 
     def cifra(self, tipo, valore, tweak):
         return self._TIPI[tipo](self, valore, tweak, True)

@@ -141,11 +141,11 @@ class Rifiuti(unittest.TestCase):
         self.s = Surrogatore(CHIAVE)
 
     def test_troppo_corto_per_essere_cifrato(self):
-        """Una lettera sola ha dominio 26: sotto il minimo di FF1, e uscirebbe
-        identica — cioe' in chiaro."""
+        """Una lettera sola da' cinque o ventuno combinazioni: sotto il minimo,
+        e uscirebbe identica — cioe' in chiaro."""
         with self.assertRaises(ValoreNonTrattabile) as e:
             self.s.cifra("NOME", "A", TW)
-        self.assertIn("almeno due", str(e.exception))
+        self.assertIn("troppo corto", str(e.exception))
 
     def test_vuoto(self):
         with self.assertRaises(ValoreNonTrattabile):
@@ -198,3 +198,108 @@ class ListaSostituita(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ScheletroConservato(unittest.TestCase):
+    """Il ripiego deve restare pronunciabile: e' il punto di tutto il tipo.
+
+    Cifrare le lettere come un blocco unico dava `Acciaro -> Jkjnpmg`: corretto
+    e inservibile. Cifrando dentro le classi — vocale con vocale, consonante
+    con consonante — lo scheletro resta, e cio' che esce si legge.
+    """
+
+    def setUp(self):
+        self.s = Surrogatore(CHIAVE)
+
+    def _fuori(self, valore):
+        surrogato = self.s.cifra("COGNOME", valore, TW)
+        self.assertEqual(self.s.decifra("COGNOME", surrogato, TW), valore)
+        return surrogato
+
+    def _scheletro(self, parola):
+        from proteo.surrogati import _VOCALI
+        return "".join("V" if c.upper() in _VOCALI else "C"
+                       for c in parola if c.isalpha())
+
+    def test_vocali_e_consonanti_restano_al_loro_posto(self):
+        for valore in ("Acciaro", "Gamboni", "Micaela", "Zambetta", "Grisai"):
+            surrogato = self._fuori(valore)
+            self.assertEqual(self._scheletro(surrogato), self._scheletro(valore),
+                             "%s -> %s" % (valore, surrogato))
+
+    def test_niente_grappoli_impronunciabili(self):
+        """La prova pratica: nessuna sequenza che una lingua non direbbe, se
+        l'originale non ce l'aveva."""
+        for valore in ("Acciaro", "Gamboni", "Francesco", "Cantone"):
+            surrogato = self._fuori(valore)
+            self.assertNotRegex(surrogato, r"[BCDFGHJKLMNPQRSTVWXYZ]{4}")
+
+    def test_le_parole_restano_parole(self):
+        surrogato = self._fuori("Della barbera")
+        self.assertEqual([len(p) for p in surrogato.split(" ")], [5, 7])
+
+    def test_le_cifre_restano_cifre_e_distinte(self):
+        due, tre = self._fuori("Cognome-paz2"), self._fuori("Cognome-paz3")
+        self.assertTrue(due.endswith(("0", "1", "2", "3", "4", "5", "6", "7",
+                                      "8", "9")))
+        self.assertNotEqual(due, tre)
+
+    def test_biiettivo(self):
+        fuori = ["Acciar%s" % c for c in "abcdefghijklmnopqrstuvwxyz"]
+        self.assertEqual(len({self.s.cifra("COGNOME", v, TW) for v in fuori}),
+                         len(fuori))
+
+    def test_la_versione_del_ripiego_viaggia_col_registro(self):
+        """Cambiare il modo di cifrare i valori fuori lista cambia i surrogati:
+        chi decifra deve accorgersene invece di ottenere valori sbagliati."""
+        from proteo.surrogati import Surrogatore as S
+        self.assertGreaterEqual(S.VERSIONE_RIPIEGO, 2)
+
+
+class GruppiLegali(unittest.TestCase):
+    """Le sequenze che l'italiano non ha non devono comparire nei surrogati."""
+
+    def setUp(self):
+        self.s = Surrogatore(CHIAVE)
+
+    def _fuori(self, valore):
+        surrogato = self.s.cifra("COGNOME", valore, TW)
+        self.assertEqual(self.s.decifra("COGNOME", surrogato, TW), valore)
+        return surrogato
+
+    def test_un_raddoppio_resta_un_raddoppio(self):
+        for valore in ("Zambetta", "Crivelli", "Cichetti", "Genna"):
+            surrogato = self._fuori(valore)
+            self.assertRegex(surrogato, r"(.)\1", "%s -> %s" % (valore, surrogato))
+
+    def test_un_gruppo_con_liquida_resta_legale(self):
+        """`fr` puo' diventare `br` o `gl`, mai `dl` — che non esiste."""
+        from proteo.surrogati import _GRUPPI_LIQUIDI, _unita
+        for valore in ("Francesco", "Granitto", "Crivelli", "Capri"):
+            surrogato = self._fuori(valore).upper()
+            for tipo, pezzo in _unita(surrogato):
+                if tipo == "CL":
+                    self.assertIn(pezzo, _GRUPPI_LIQUIDI)
+
+    def test_niente_vocali_doppie_inventate(self):
+        for valore in ("Micaela", "Mariano", "Avellone", "Cantone", "Gamboni"):
+            surrogato = self._fuori(valore)
+            for i in range(len(surrogato) - 1):
+                if surrogato[i].upper() in "AEIOU":
+                    self.assertNotEqual(surrogato[i], surrogato[i + 1],
+                                        "%s -> %s" % (valore, surrogato))
+
+    def test_niente_grappoli_di_consonanti(self):
+        for valore in ("Ferrarini", "Cantone", "Contro", "Curci", "Mariano"):
+            self.assertNotRegex(self._fuori(valore).upper(),
+                                r"[BCDFGHJKLMNPQRSTVWXYZ]{4}")
+
+    def test_una_forma_diversa_non_passa(self):
+        """Il cammino sulla forma: se il surrogato si rileggesse con unita'
+        diverse, la decifratura lo scomporrebbe in un altro modo."""
+        from proteo.surrogati import _forma
+        for valore in ("Acciaro", "Zambetta", "Curci", "Cichetti", "Grisai",
+                       "Francesco", "Della", "Contro", "Capri", "Genna"):
+            surrogato = self._fuori(valore)
+            self.assertEqual(_forma(surrogato.upper()), _forma(valore.upper()),
+                             "%s -> %s" % (valore, surrogato))

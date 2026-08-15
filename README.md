@@ -81,18 +81,34 @@ stranieri, doppi nomi, `Nome-paz2` lasciato lì da un collaudo. **Chi non è in
 lista non si ferma: si cifra lettera per lettera**, conservando la forma.
 
 ```
-Erika        → Luigi        (lista)     Bartoli      → Eaumvrm       (ripiego)
-MASCIA       → COSIMO       (lista)     Maria Matias → Zqqpb Ypwogg  (ripiego)
-Pierpaolo    → Giacomo      (lista)     Nome-paz2    → Falm-xys2     (ripiego)
+Erika        → Luigi        (lista)     Zambetta     → Kontollo      (ripiego)
+Riggio       → Avolio       (lista)     Della sala   → Xinne qasi    (ripiego)
+Bartoli      → Lazzari      (lista)     Cognome-paz2 → Peshoki-ted2  (ripiego)
 ```
 
-Il ripiego non produce un nome plausibile, ma è reversibile, deterministico e
-biiettivo come tutto il resto — e mantiene spazi, trattini, cifre e maiuscole
-al loro posto. Il surrogato del ripiego **non può mai essere una voce della
-lista**: se lo fosse, in decifratura verrebbe preso per l'altro percorso e
-restituirebbe un valore diverso dall'originale, in silenzio. Viene quindi
-ricifrato finché non cade fuori dalla lista (*cycle-walking*), e la decifratura
-cammina allo stesso modo.
+Il ripiego non cifra le lettere: cifra i **pezzi pronunciabili** della parola.
+Una vocale diventa una vocale, un raddoppio un raddoppio, un gruppo con liquida
+un altro gruppo con liquida, una nasale più occlusiva (`mb`, `nt`) resta tale.
+Così ciò che esce si legge:
+
+```
+Zambetta  → Kontollo     Crivelli → Glatissa    Cantone  → Dembosi
+Granitto  → Drulakki     Cichetti → Yochunnu    Capri    → Kegro
+```
+
+Cifrare le lettere e basta darebbe `Francesco → Nfuwxibzu`: corretto,
+reversibile, e inservibile — su una colonna di cognomi, dove i valori fuori
+lista sono la maggioranza, il database smetterebbe di somigliare a un database
+di persone. Che è proprio il difetto che questo progetto rimprovera alla
+cifratura tradizionale.
+
+I gruppi legali si elencano invece di comporli: `br` e `tr` esistono, `dl` e
+`tl` no. Le vocali doppie che l'originale non aveva vengono rifiutate. E il
+surrogato **non può mai essere una voce della lista**, né rileggersi con una
+scomposizione diversa dall'originale: se lo fosse, in decifratura verrebbe
+scomposto in un altro modo e restituirebbe un valore diverso, in silenzio.
+Viene quindi ricifrato finché entrambe le condizioni non sono soddisfatte
+(*cycle-walking*), e la decifratura cammina allo stesso modo.
 
 Passano dal ripiego anche i valori che **da una voce di lista non
 rientrerebbero identici**: `De  Luca` con due spazi (rientrerebbe con uno solo)
@@ -268,7 +284,7 @@ ancora scritto.
 | scrittura massiva / clone | ⬜ | percorsi veloci per motore (`SqlBulkCopy`, `COPY`), `BACKUP`/`RESTORE` |
 | `app.py` | ⬜ | UI web locale |
 
-**287 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
+**298 test, tutti verdi**, incluso il ciclo completo cifra → verifica → decifra su
 un database SQLite reale. Il nucleo non dipende da alcun database: si prova senza
 un server acceso.
 
@@ -869,9 +885,14 @@ Dichiarati apertamente:
 - **Il testo libero non è trattato.** Colonne come `note` o `descrizione`
   richiedono riconoscimento di entità, non cifratura di campo. Una colonna
   `nome`, invece, è tutta un nome: quella si tratta.
-- **I nomi fuori lista non restano nomi.** Vengono cifrati lettera per lettera,
-  quindi la colonna diventa un misto di nomi plausibili e stringhe evidentemente
-  finte. Allargare la lista riduce il fenomeno, ma va fatto prima di cifrare.
+- **I nomi fuori lista non sono nomi veri.** Sono parole pronunciabili e
+  plausibili, ma inventate: `Kontollo` si legge, non esiste. Allargare la lista
+  aumenta la quota di surrogati che sono cognomi reali, e va fatto prima di
+  cifrare.
+- **Lo scheletro della parola si conserva.** Lunghezza, posizione delle vocali,
+  raddoppi e gruppi restano quelli dell'originale: è ciò che rende il surrogato
+  leggibile, ed è anche un'informazione in più rispetto alla sola lunghezza. Su
+  un cognome molto raro e molto lungo restringe il campo.
 - **Le lettere accentate fuori lista restano al loro posto.** `Nicolò` non in
   lista diventa `Xqfzò`: l'accento non appartiene all'alfabeto cifrato.
 - **Il nome cifrato non conserva il genere.** `Mario` può diventare `Gaia`: se

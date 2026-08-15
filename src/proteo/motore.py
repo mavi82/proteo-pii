@@ -53,9 +53,18 @@ class Motore:
         return db.introspeziona(self.engine, sorted(self.policy.tabelle))
 
     def _impronta_lista(self, tipo):
-        """Impronta della lista usata da quel tipo, o None se non ne usa."""
+        """Cosa serve, oltre alla chiave, per tornare indietro da quel tipo.
+
+        Sono due cose e viaggiano insieme: il contenuto della lista e la
+        versione del ripiego. Cambiare una delle due cambia i surrogati, quindi
+        deve fermare una decifratura fatta con l'altra — altrimenti si
+        otterrebbero valori diversi dagli originali, in silenzio.
+        """
         quale = Surrogatore.LISTE.get(tipo)
-        return self.surr.lista(quale).impronta if quale else None
+        if not quale:
+            return None
+        return "%s/r%d" % (self.surr.lista(quale).impronta,
+                           Surrogatore.VERSIONE_RIPIEGO)
 
     def _lista_troppo_lunga(self, tipo, col):
         """La voce piu' lunga della lista entra nella colonna?
