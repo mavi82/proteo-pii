@@ -72,11 +72,19 @@ _NIENTE = _Niente()
 def crea_engine(url, **opzioni):
     """Engine con le opzioni che servono a Proteo, per tutti i punti d'ingresso."""
     u = make_url(url) if isinstance(url, str) else url
-    if u.drivername.startswith("mssql+pyodbc"):
+    if u.drivername.startswith("mssql+pyodbc") and not _e_freetds(u):
         # senza questo pyodbc manda gli INSERT della tabella di appoggio uno per
         # uno: su un database remoto e' un round-trip di rete per valore distinto.
+        #
+        # Solo con il driver Microsoft, pero': `fast_executemany` passa gli
+        # array di parametri di ODBC, che FreeTDS non implementa allo stesso
+        # modo — e li' l'inserimento della mappa si pianta invece di fallire.
         opzioni.setdefault("fast_executemany", True)
     return create_engine(u, **opzioni)
+
+
+def _e_freetds(url):
+    return "freetds" in (url.query.get("driver") or "").lower()
 
 
 def anomalie_url(url):

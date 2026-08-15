@@ -129,5 +129,26 @@ class NienteAltreConnessioniATransazioneAperta(unittest.TestCase):
                              {"Z"})
 
 
+class OpzioniDelDriver(unittest.TestCase):
+    """`fast_executemany` e' del driver Microsoft, non di ogni pyodbc."""
+
+    def test_col_driver_microsoft_si_attiva(self):
+        from sqlalchemy.engine import make_url
+        url = make_url("mssql+pyodbc://u:p@h:1433/d"
+                       "?driver=ODBC+Driver+18+for+SQL+Server")
+        self.assertFalse(db._e_freetds(url))
+
+    def test_con_freetds_no(self):
+        """Li' gli array di parametri non sono implementati allo stesso modo, e
+        l'inserimento della mappa si pianta invece di fallire."""
+        from sqlalchemy.engine import make_url
+        self.assertTrue(db._e_freetds(
+            make_url("mssql+pyodbc://u:p@h:1433/d?driver=FreeTDS&TDS_Version=7.4")))
+
+    def test_senza_driver_dichiarato_non_esplode(self):
+        from sqlalchemy.engine import make_url
+        self.assertFalse(db._e_freetds(make_url("mssql+pyodbc://u:p@h:1433/d")))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
