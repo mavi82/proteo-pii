@@ -35,6 +35,14 @@ shell e nell'output di `ps`, visibile a ogni altro utente della macchina. Per
 questo `--url` avvisa, e le alternative sono `$PROTEO_URL`, `$PROTEO_PASSWORD`
 o il config, che si legge solo se e' protetto davvero.
 
+## Se sembra piantato
+
+    kill -USR1 <pid>
+
+stampa dove si trova il processo in quel momento, thread per thread: dice se
+sta aspettando il database o se sta calcolando, che e' l'unica domanda che
+conta e dall'esterno non si distingue.
+
 ## Perche' `cifra` pretende una conferma
 
 `esegui()` e' l'unica operazione irreversibile senza la chiave. Un comando che
@@ -728,7 +736,25 @@ def _parser():
     return p
 
 
+def _dove_sono_fermo():
+    """`kill -USR1 <pid>` stampa dove sta il processo, thread per thread.
+
+    Quando un'esecuzione sembra piantata la domanda e' sempre la stessa: sta
+    aspettando il database o sta calcolando? Dall'esterno non si distingue, e
+    senza distinguerla si cerca il difetto dalla parte sbagliata. Questo lo dice
+    con certezza, e costa una riga: la traccia finisce nello stesso posto dove
+    va tutto il resto — il terminale, o il log se si gira in sottofondo.
+    """
+    try:
+        import faulthandler
+        import signal
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except (ImportError, AttributeError, ValueError):
+        pass          # su Windows SIGUSR1 non esiste: si perde la diagnosi, non altro
+
+
 def main(argv=None):
+    _dove_sono_fermo()
     args = _parser().parse_args(argv)
     try:
         args.func(args)
